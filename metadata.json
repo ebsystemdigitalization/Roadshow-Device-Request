@@ -1,0 +1,8 @@
+{
+  "name": "Remix Roadshow Device Request (Amani Ver)",
+  "description": "Enterprise roadshow device request system with multi-tier approval workflows for Sales, Head of Sales, Device Team, Head of Operation, and Admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
