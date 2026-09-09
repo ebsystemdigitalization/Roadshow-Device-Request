@@ -4,6 +4,7 @@ import {
   initializeApp
 } from 'firebase-admin/app';
 
+import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 
 const firebaseApp =
@@ -17,3 +18,4 @@ const firebaseApp =
       });
 
 export const db = getFirestore(firebaseApp);
+export const adminAuth = getAuth(firebaseApp);

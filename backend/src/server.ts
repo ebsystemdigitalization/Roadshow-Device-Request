@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { db } from './firebase.js';
+import { requireAuth } from './middleware/auth.js';
 
 const app = express();
 
@@ -53,6 +54,33 @@ app.get('/health/firestore', async (_request, response) => {
       firestore: 'disconnected'
     });
   }
+});
+
+app.get('/api/auth/me', requireAuth, async (request, response) => {
+  const uid = request.authenticatedUser!.uid;
+
+  const userDocument = await db.collection('users').doc(uid).get();
+
+  if (!userDocument.exists) {
+    response.status(403).json({
+      message: 'No Roadshow Device Request profile exists for this account.'
+    });
+    return;
+  }
+
+  const profile = userDocument.data();
+
+  if (profile?.userStatus === 'Inactive') {
+    response.status(403).json({
+      message: 'This Roadshow Device Request account is inactive.'
+    });
+    return;
+  }
+
+  response.status(200).json({
+    id: userDocument.id,
+    ...profile
+  });
 });
 
 app.listen(port, '0.0.0.0', () => {

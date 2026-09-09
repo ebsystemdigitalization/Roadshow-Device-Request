@@ -13,6 +13,8 @@ import { DeviceInventoryUploadModal } from './components/DeviceInventoryUploadMo
 import { ImeiInventoryPage } from './components/ImeiInventoryPage';
 import { ImeiDetailRecord } from './components/ImeiDetailModal';
 import { generateId, isRequestForHeadOfSales, isRequestForHeadOfUnit, isRequestForHeadOfDepartment } from './utils/formatters';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth } from './lib/firebase';
 
 function ensureUniqueImeiInventory(items: ImeiInventoryItem[]): ImeiInventoryItem[] {
   const seenIds = new Set<string>();
@@ -39,10 +41,8 @@ export default function App() {
     return INITIAL_USERS;
   });
 
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    const savedAuth = localStorage.getItem('rdr_is_authenticated');
-    return savedAuth === 'true';
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
 
   const [currentUser, setCurrentUser] = useState<User>(() => {
     const savedId = localStorage.getItem('rdr_current_user_id');
@@ -91,7 +91,76 @@ export default function App() {
   const [deviceTeamEditRequest, setDeviceTeamEditRequest] = useState<RoadshowRequest | null>(null);
   const [isInventoryModalOpen, setIsInventoryModalOpen] = useState<boolean>(false);
 
-  // Persist state updates to LocalStorage
+  // Restore and verify the Firebase session through the Cloud Run API.
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async firebaseUser => {
+      if (!firebaseUser) {
+        setIsAuthenticated(false);
+        setIsAuthChecking(false);
+        return;
+      }
+
+      try {
+        const idToken = await firebaseUser.getIdToken();
+
+        const response = await fetch(
+          `${import.meta.env.VITE_API_BASE_URL}/api/auth/me`,
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${idToken}`
+            }
+          }
+        );
+
+        const payload = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            payload.message ||
+            'Unable to restore your Roadshow Device Request session.'
+          );
+        }
+
+        const profile = payload.user ?? payload;
+        const status = profile.userStatus || profile.status || 'Active';
+
+        if (status === 'Inactive') {
+          throw new Error('This user account is inactive.');
+        }
+
+        const restoredUser: User = {
+          id: profile.id || profile.uid || firebaseUser.uid,
+          name: profile.name,
+          email: profile.email || firebaseUser.email || '',
+          role: profile.role,
+          state: profile.state || '',
+          region: profile.region || '',
+          avatarUrl: profile.avatarUrl,
+          headOfUnit: profile.headOfUnit,
+          headOfSales: profile.headOfSales,
+          headOfDepartment: profile.headOfDepartment,
+          userStatus: profile.userStatus || 'Active',
+          status: profile.status
+        };
+
+        setCurrentUser(restoredUser);
+        setIsAuthenticated(true);
+      } catch (error) {
+        console.error('Session restoration failed:', error);
+
+        await signOut(auth);
+        setIsAuthenticated(false);
+      } finally {
+        setIsAuthChecking(false);
+      }
+    });
+
+    return unsubscribe;
+  }, []);
+
+  // Persist temporary prototype data to LocalStorage.
   useEffect(() => {
     localStorage.setItem('rdr_users', JSON.stringify(users));
   }, [users]);
@@ -108,39 +177,46 @@ export default function App() {
     localStorage.setItem('rdr_imei_inventory', JSON.stringify(imeiInventory));
   }, [imeiInventory]);
 
-  useEffect(() => {
-    localStorage.setItem('rdr_current_user_id', currentUser.id);
-  }, [currentUser]);
-
-  // Ensure non-admin users cannot stay on 'admin' tab, and non-Device/Admin cannot stay on 'imei-inventory' tab
+  // Ensure non-admin users cannot remain on restricted tabs.
   useEffect(() => {
     if (currentUser.role !== 'Admin' && activeTab === 'admin') {
       setActiveTab('requests');
     }
-    if (currentUser.role !== 'Admin' && currentUser.role !== 'Device Team' && activeTab === 'imei-inventory') {
+    if (
+      currentUser.role !== 'Admin' &&
+      currentUser.role !== 'Device Team' &&
+      activeTab === 'imei-inventory'
+    ) {
       setActiveTab('requests');
     }
   }, [currentUser.role, activeTab]);
 
-  // Keep selectedRequest updated when requests array mutates
+  // Keep the selected request synchronized when the requests array changes.
   useEffect(() => {
     if (selectedRequest) {
       const updated = requests.find(r => r.id === selectedRequest.id);
       if (updated) setSelectedRequest(updated);
     }
-  }, [requests]);
+  }, [requests, selectedRequest]);
 
   // Login & Logout Handlers
   const handleLoginSuccess = (user: User) => {
     setCurrentUser(user);
     setIsAuthenticated(true);
-    localStorage.setItem('rdr_is_authenticated', 'true');
-    localStorage.setItem('rdr_current_user_id', user.id);
   };
 
-  const handleLogout = () => {
-    setIsAuthenticated(false);
-    localStorage.removeItem('rdr_is_authenticated');
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Logout failed:', error);
+    } finally {
+      setIsAuthenticated(false);
+      setActiveTab('requests');
+
+      localStorage.removeItem('rdr_is_authenticated');
+      localStorage.removeItem('rdr_current_user_id');
+    }
   };
 
   // Reset demo data handler
@@ -497,7 +573,7 @@ export default function App() {
             sppOrder: rec.sppOrder || undefined,
             mobileNumber: rec.mobileNumber || undefined,
             submissionRemarks: rec.submissionRemarks || undefined,
-            status: rec.status || 'Assigned',
+            status: (rec.status || 'Assigned') as ImeiInventoryItem['status'],
             updatedAt: now
           });
         }
@@ -826,9 +902,22 @@ export default function App() {
     return false;
   }).length;
 
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-10 h-10 mx-auto border-4 border-indigo-400/30 border-t-indigo-400 rounded-full animate-spin" />
+
+          <p className="mt-4 text-sm text-slate-300">
+            Restoring your secure session...
+          </p>
+        </div>
+      </div>
+    );
+  }
   // If not logged in, show Login Page
   if (!isAuthenticated) {
-    return <LoginPage users={users} onLoginSuccess={handleLoginSuccess} />;
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
