@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { RoadshowRequest, User, UserRole, PartBDeviceItem, DeviceInventoryItem, ImeiInventoryItem } from './types';
-import { INITIAL_USERS, INITIAL_REQUESTS, INITIAL_DEVICE_INVENTORY, INITIAL_IMEI_INVENTORY } from './data/seedData';
+import { INITIAL_USERS, INITIAL_DEVICE_INVENTORY, INITIAL_IMEI_INVENTORY } from './data/seedData';
 import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
 import { RequestList } from './components/RequestList';
@@ -15,6 +15,13 @@ import { ImeiDetailRecord } from './components/ImeiDetailModal';
 import { generateId, isRequestForHeadOfSales, isRequestForHeadOfUnit, isRequestForHeadOfDepartment } from './utils/formatters';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './lib/firebase';
+import {
+  createRequest,
+  deleteRequest,
+  getRequests,
+  updateRequest
+} from './services/requestApi';
+import { getUsers } from './services/userApi';
 
 function ensureUniqueImeiInventory(items: ImeiInventoryItem[]): ImeiInventoryItem[] {
   const seenIds = new Set<string>();
@@ -32,14 +39,8 @@ function ensureUniqueImeiInventory(items: ImeiInventoryItem[]): ImeiInventoryIte
 }
 
 export default function App() {
-  // Load initial state from LocalStorage or seed data
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem('rdr_users');
-    if (saved) {
-      try { return JSON.parse(saved); } catch { /* ignore */ }
-    }
-    return INITIAL_USERS;
-  });
+  // Users are loaded from Firestore after authentication.
+  const [users, setUsers] = useState<User[]>([]);
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
@@ -50,16 +51,10 @@ export default function App() {
       const found = users.find(u => u.id === savedId);
       if (found) return found;
     }
-    return users[0];
+    return INITIAL_USERS[0];
   });
 
-  const [requests, setRequests] = useState<RoadshowRequest[]>(() => {
-    const saved = localStorage.getItem('rdr_requests');
-    if (saved) {
-      try { return JSON.parse(saved); } catch { /* ignore */ }
-    }
-    return INITIAL_REQUESTS;
-  });
+  const [requests, setRequests] = useState<RoadshowRequest[]>([]);
 
   const [deviceInventory, setDeviceInventory] = useState<DeviceInventoryItem[]>(() => {
     const saved = localStorage.getItem('rdr_device_inventory');
@@ -160,15 +155,48 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // Persist temporary prototype data to LocalStorage.
+  // Load the user directory and requests after authentication succeeds.
   useEffect(() => {
-    localStorage.setItem('rdr_users', JSON.stringify(users));
-  }, [users]);
+    if (!isAuthenticated) {
+      setUsers([]);
+      setRequests([]);
+      return;
+    }
 
-  useEffect(() => {
-    localStorage.setItem('rdr_requests', JSON.stringify(requests));
-  }, [requests]);
+    let isCancelled = false;
 
+    const loadApplicationData = async () => {
+      try {
+        const [firestoreUsers, firestoreRequests] = await Promise.all([
+          getUsers(),
+          getRequests()
+        ]);
+
+        if (!isCancelled) {
+          setUsers(firestoreUsers);
+          setRequests(firestoreRequests);
+        }
+      } catch (error) {
+        console.error('Unable to load Firestore application data:', error);
+
+        if (!isCancelled) {
+          alert(
+            error instanceof Error
+              ? error.message
+              : 'Unable to load the RDR application data.'
+          );
+        }
+      }
+    };
+
+    void loadApplicationData();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isAuthenticated]);
+
+  // Persist the remaining temporary prototype data to LocalStorage.
   useEffect(() => {
     localStorage.setItem('rdr_device_inventory', JSON.stringify(deviceInventory));
   }, [deviceInventory]);
@@ -227,8 +255,8 @@ export default function App() {
     localStorage.removeItem('rdr_imei_inventory');
     localStorage.removeItem('rdr_current_user_id');
     localStorage.removeItem('rdr_is_authenticated');
-    setUsers(INITIAL_USERS);
-    setRequests(INITIAL_REQUESTS);
+    setUsers([]);
+    setRequests([]);
     setDeviceInventory(INITIAL_DEVICE_INVENTORY);
     setImeiInventory(INITIAL_IMEI_INVENTORY);
     setCurrentUser(INITIAL_USERS[0]);
@@ -277,23 +305,88 @@ export default function App() {
   const isUserActiveSalesTeam = currentUser.role === 'Sales Team' && (currentUser.userStatus || currentUser.status || 'Active') === 'Active';
 
   // Handlers for Sales Team
-  const handleSaveSalesRequest = (req: RoadshowRequest, isSubmit: boolean) => {
-    setRequests(prev => {
-      const exists = prev.some(r => r.id === req.id);
-      if (!exists && !isUserActiveSalesTeam) {
-        alert('Only active Sales Team members are allowed to create new requests.');
-        return prev;
+  const handleSaveSalesRequest = async (
+    req: RoadshowRequest,
+    _isSubmit: boolean
+  ) => {
+    const existingRequest = requests.find(request => request.id === req.id);
+
+    if (!existingRequest && !isUserActiveSalesTeam) {
+      alert('Only active Sales Team members are allowed to create new requests.');
+      return;
+    }
+
+    try {
+      if (existingRequest) {
+        const savedRequest = await updateRequest(req);
+
+        setRequests(previousRequests =>
+          previousRequests.map(request =>
+            request.id === savedRequest.id ? savedRequest : request
+          )
+        );
+
+        return;
       }
-      if (exists) {
-        return prev.map(r => (r.id === req.id ? req : r));
-      }
-      return [req, ...prev];
-    });
+
+      const createdRequest = await createRequest(req);
+
+      setRequests(previousRequests => [createdRequest, ...previousRequests]);
+    } catch (error) {
+      console.error('Unable to save request:', error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Unable to save the roadshow request.'
+      );
+    }
   };
 
-  const handleDeleteSalesRequest = (reqId: string) => {
-    setRequests(prev => prev.filter(r => r.id !== reqId));
-    if (selectedRequest?.id === reqId) setSelectedRequest(null);
+  const handleDeleteSalesRequest = async (reqId: string) => {
+    try {
+      await deleteRequest(reqId);
+
+      setRequests(previousRequests =>
+        previousRequests.filter(request => request.id !== reqId)
+      );
+
+      if (selectedRequest?.id === reqId) {
+        setSelectedRequest(null);
+      }
+    } catch (error) {
+      console.error('Unable to delete request:', error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Unable to delete the roadshow request.'
+      );
+    }
+  };
+
+  const persistUpdatedRequest = async (updatedRequest: RoadshowRequest) => {
+    try {
+      const savedRequest = await updateRequest(updatedRequest);
+
+      setRequests(previousRequests =>
+        previousRequests.map(request =>
+          request.id === savedRequest.id ? savedRequest : request
+        )
+      );
+
+      if (selectedRequest?.id === savedRequest.id) {
+        setSelectedRequest(savedRequest);
+      }
+    } catch (error) {
+      console.error('Unable to update request:', error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Unable to update the roadshow request.'
+      );
+    }
   };
 
   const handleSubmitSalesDraft = (req: RoadshowRequest) => {
@@ -316,73 +409,83 @@ export default function App() {
       ]
     };
 
-    setRequests(prev => prev.map(r => (r.id === req.id ? updatedReq : r)));
+    void persistUpdatedRequest(updatedReq);
   };
 
   // --- Handlers for Head of Sales ---
   const handleApproveByHeadOfSales = (reqId: string, comments: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        return {
-          ...r,
-          status: 'Under Review', // flows to Device Team
-          updatedAt: now,
-          headOfSalesApproval: {
-            approvedBy: currentUser.name,
-            approvedAt: now,
-            comments: comments || 'Approved by Head of Sales.'
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Head of Sales',
-              action: 'Approved Request',
-              comments: comments || 'Approved by Head of Sales.',
-              previousStatus: 'Pending Head of Sales',
-              newStatus: 'Under Review'
-            }
-          ]
-        };
-      })
-    );
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      status: 'Under Review',
+      updatedAt: now,
+      headOfSalesApproval: {
+        approvedBy: currentUser.name,
+        approvedAt: now,
+        comments: comments || 'Approved by Head of Sales.'
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Head of Sales',
+          action: 'Approved Request',
+          comments: comments || 'Approved by Head of Sales.',
+          previousStatus: 'Pending Head of Sales',
+          newStatus: 'Under Review'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   const handleRejectByHeadOfSales = (reqId: string, reason: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        return {
-          ...r,
-          status: 'Rejected',
-          updatedAt: now,
-          rejectionInfo: {
-            rejectedBy: currentUser.name,
-            rejectedRole: 'Head of Sales',
-            rejectedAt: now,
-            reason
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Head of Sales',
-              action: 'Rejected Request',
-              comments: reason,
-              previousStatus: 'Pending Head of Sales',
-              newStatus: 'Rejected'
-            }
-          ]
-        };
-      })
-    );
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      status: 'Rejected',
+      updatedAt: now,
+      rejectionInfo: {
+        rejectedBy: currentUser.name,
+        rejectedRole: 'Head of Sales',
+        rejectedAt: now,
+        reason
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Head of Sales',
+          action: 'Rejected Request',
+          comments: reason,
+          previousStatus: 'Pending Head of Sales',
+          newStatus: 'Rejected'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   // --- Handlers for Device Team ---
@@ -404,33 +507,31 @@ export default function App() {
     const statusVal: 'HOO Approved' | 'Pending Approval' | 'Unassigned Stock' =
       reqStatus === 'Approved' ? 'HOO Approved' : (reqCode ? 'Pending Approval' : 'Unassigned Stock');
 
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        const updatedReq: RoadshowRequest = {
-          ...r,
-          partB: updatedPartB,
-          totalValueRM: totalVal,
-          updatedAt: now,
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: currentUser.role || 'Device Team',
-              action: (imeiRecords && imeiRecords.length > 0)
-                ? 'Uploaded IMEIs & Synced to IMEI Inventory'
-                : 'Updated Device Allocation Details'
-            }
-          ]
-        };
-        if (selectedRequest && selectedRequest.id === reqId) {
-          setSelectedRequest(updatedReq);
+    if (!targetReq) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
+    const updatedRequest: RoadshowRequest = {
+      ...targetReq,
+      partB: updatedPartB,
+      totalValueRM: totalVal,
+      updatedAt: now,
+      history: [
+        ...targetReq.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: currentUser.role || 'Device Team',
+          action: (imeiRecords && imeiRecords.length > 0)
+            ? 'Uploaded IMEIs & Synced to IMEI Inventory'
+            : 'Updated Device Allocation Details'
         }
-        return updatedReq;
-      })
-    );
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
 
     const combinedRecords: ImeiInventoryItem[] = [...(imeiRecords || [])];
 
@@ -583,6 +684,13 @@ export default function App() {
   };
 
   const handleApproveByDeviceTeam = (reqId: string, updatedPartB: PartBDeviceItem[], comments: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
     // Calculate total value only for approved devices with non-zero recommended quantity
     const approvedItems = updatedPartB.filter(item => (item.status || 'Approved') === 'Approved');
@@ -600,255 +708,286 @@ export default function App() {
         status: 'Rejected' as const
       }));
 
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
+    const existingRejected = requestToUpdate.rejectedPartB || [];
+    const mergedRejected = [...existingRejected];
 
-        const existingRejected = r.rejectedPartB || [];
-        const mergedRejected = [...existingRejected];
-        rejectedItems.forEach(item => {
-          const idx = mergedRejected.findIndex(ex => ex.id === item.id);
-          if (idx !== -1) {
-            mergedRejected[idx] = item;
-          } else {
-            mergedRejected.push(item);
-          }
-        });
+    rejectedItems.forEach(item => {
+      const index = mergedRejected.findIndex(existing => existing.id === item.id);
 
-        return {
-          ...r,
-          partB: updatedPartB,
-          rejectedPartB: mergedRejected,
-          totalValueRM: totalVal,
-          status: 'Pending Sales Acceptance', // flows back to initial Sales Team for acceptance
-          updatedAt: now,
-          deviceTeamApproval: {
-            approvedBy: currentUser.name,
-            approvedAt: now,
-            comments: comments || 'Device list verified and reserved.'
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Device Team',
-              action: 'Approved Device Allocation & Flowed to Sales Team Acceptance',
-              comments: comments || 'Device list verified and reserved.',
-              previousStatus: 'Under Review',
-              newStatus: 'Pending Sales Acceptance'
-            }
-          ]
-        };
-      })
-    );
+      if (index !== -1) {
+        mergedRejected[index] = item;
+      } else {
+        mergedRejected.push(item);
+      }
+    });
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      partB: updatedPartB,
+      rejectedPartB: mergedRejected,
+      totalValueRM: totalVal,
+      status: 'Pending Sales Acceptance',
+      updatedAt: now,
+      deviceTeamApproval: {
+        approvedBy: currentUser.name,
+        approvedAt: now,
+        comments: comments || 'Device list verified and reserved.'
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Device Team',
+          action: 'Approved Device Allocation & Flowed to Sales Team Acceptance',
+          comments: comments || 'Device list verified and reserved.',
+          previousStatus: 'Under Review',
+          newStatus: 'Pending Sales Acceptance'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   const handleAcceptBySalesTeam = (reqId: string, comments: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
 
-        // Separate and keep devices with Status Approved for active allocation
-        const approvedPartB = (r.partB || [])
-          .filter(item => (item.status || 'Approved') === 'Approved')
-          .map(item => {
-            const recQty = item.recommendedQuantity ?? item.quantity ?? 0;
-            const rrpRM = item.rrpRM ?? 0;
-            return {
-              ...item,
-              quantity: recQty,
-              recommendedQuantity: recQty,
-              totalRrpRM: recQty * rrpRM,
-              status: 'Approved' as const
-            };
-          });
-
-        // Collect rejected devices from current partB
-        const newlyRejected = (r.partB || [])
-          .filter(item => item.status === 'Rejected')
-          .map(item => ({
-            ...item,
-            recommendedQuantity: 0,
-            totalRrpRM: 0,
-            status: 'Rejected' as const
-          }));
-
-        // Preserve all previously rejected items plus any newly rejected items as historical detail
-        const existingRejected = r.rejectedPartB || [];
-        const mergedRejected = [...existingRejected];
-        newlyRejected.forEach(item => {
-          const idx = mergedRejected.findIndex(ex => ex.id === item.id);
-          if (idx !== -1) {
-            mergedRejected[idx] = item;
-          } else {
-            mergedRejected.push(item);
-          }
-        });
-
-        const newTotalValRM = approvedPartB.reduce((acc, curr) => acc + curr.totalRrpRM, 0);
-        const assignedHoo = newTotalValRM > 50000 ? 'NOORA MAT RIFIN' : 'MASILA BT SHAMERE';
-
-        const defaultComment = `Sales Team accepted allocated devices (Total RRP RM ${newTotalValRM.toLocaleString()}; assigned approval to ${assignedHoo}).`;
+    const approvedPartB = (requestToUpdate.partB || [])
+      .filter(item => (item.status || 'Approved') === 'Approved')
+      .map(item => {
+        const recommendedQuantity = item.recommendedQuantity ?? item.quantity ?? 0;
+        const rrpRM = item.rrpRM ?? 0;
 
         return {
-          ...r,
-          partB: approvedPartB,
-          rejectedPartB: mergedRejected,
-          totalValueRM: newTotalValRM,
-          assignedHeadOfOperation: assignedHoo,
-          status: 'Pending Head of Operation', // flows to Head of Operation after Sales Team accepts
-          updatedAt: now,
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Sales Team',
-              action: assignedHoo ? `Accepted Device Allocation (Assigned: ${assignedHoo})` : 'Accepted Device Allocation',
-              comments: comments ? (assignedHoo ? `${comments} [Assigned to: ${assignedHoo}]` : comments) : defaultComment,
-              previousStatus: 'Pending Sales Acceptance',
-              newStatus: 'Pending Head of Operation'
-            }
-          ]
+          ...item,
+          quantity: recommendedQuantity,
+          recommendedQuantity,
+          totalRrpRM: recommendedQuantity * rrpRM,
+          status: 'Approved' as const
         };
-      })
+      });
+
+    const newlyRejected = (requestToUpdate.partB || [])
+      .filter(item => item.status === 'Rejected')
+      .map(item => ({
+        ...item,
+        recommendedQuantity: 0,
+        totalRrpRM: 0,
+        status: 'Rejected' as const
+      }));
+
+    const mergedRejected = [...(requestToUpdate.rejectedPartB || [])];
+
+    newlyRejected.forEach(item => {
+      const index = mergedRejected.findIndex(existing => existing.id === item.id);
+
+      if (index !== -1) {
+        mergedRejected[index] = item;
+      } else {
+        mergedRejected.push(item);
+      }
+    });
+
+    const newTotalValRM = approvedPartB.reduce(
+      (total, item) => total + item.totalRrpRM,
+      0
     );
+
+    const assignedHoo =
+      newTotalValRM > 50000
+        ? 'NOORA MAT RIFIN'
+        : 'MASILA BT SHAMERE';
+
+    const defaultComment =
+      `Sales Team accepted allocated devices (Total RRP RM ${newTotalValRM.toLocaleString()}; assigned approval to ${assignedHoo}).`;
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      partB: approvedPartB,
+      rejectedPartB: mergedRejected,
+      totalValueRM: newTotalValRM,
+      assignedHeadOfOperation: assignedHoo,
+      status: 'Pending Head of Operation',
+      updatedAt: now,
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Sales Team',
+          action: `Accepted Device Allocation (Assigned: ${assignedHoo})`,
+          comments: comments
+            ? `${comments} [Assigned to: ${assignedHoo}]`
+            : defaultComment,
+          previousStatus: 'Pending Sales Acceptance',
+          newStatus: 'Pending Head of Operation'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   const handleRejectBySalesTeam = (reqId: string, reason: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        return {
-          ...r,
-          status: 'Rejected',
-          updatedAt: now,
-          rejectionInfo: {
-            rejectedBy: currentUser.name,
-            rejectedRole: 'Sales Team',
-            rejectedAt: now,
-            reason
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Sales Team',
-              action: 'Declined Device Allocation',
-              comments: reason,
-              previousStatus: 'Pending Sales Acceptance',
-              newStatus: 'Rejected'
-            }
-          ]
-        };
-      })
-    );
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      status: 'Rejected',
+      updatedAt: now,
+      rejectionInfo: {
+        rejectedBy: currentUser.name,
+        rejectedRole: 'Sales Team',
+        rejectedAt: now,
+        reason
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Sales Team',
+          action: 'Declined Device Allocation',
+          comments: reason,
+          previousStatus: 'Pending Sales Acceptance',
+          newStatus: 'Rejected'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   const handleRejectByDeviceTeam = (reqId: string, reason: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        return {
-          ...r,
-          status: 'Rejected',
-          updatedAt: now,
-          rejectionInfo: {
-            rejectedBy: currentUser.name,
-            rejectedRole: 'Device Team',
-            rejectedAt: now,
-            reason
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Device Team',
-              action: 'Rejected Request',
-              comments: reason,
-              previousStatus: 'Under Review',
-              newStatus: 'Rejected'
-            }
-          ]
-        };
-      })
-    );
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      status: 'Rejected',
+      updatedAt: now,
+      rejectionInfo: {
+        rejectedBy: currentUser.name,
+        rejectedRole: 'Device Team',
+        rejectedAt: now,
+        reason
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Device Team',
+          action: 'Rejected Request',
+          comments: reason,
+          previousStatus: 'Under Review',
+          newStatus: 'Rejected'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   // --- Handlers for Head of Operation ---
   const handleApproveByHeadOfOperation = (reqId: string, comments: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        return {
-          ...r,
-          status: 'Approved', // final approval
-          updatedAt: now,
-          headOfOperationApproval: {
-            approvedBy: currentUser.name,
-            approvedAt: now,
-            comments: comments || 'Final operational approval granted.'
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Head of Operation',
-              action: 'Granted Final Approval',
-              comments: comments || 'Final operational approval granted.',
-              previousStatus: 'Pending Head of Operation',
-              newStatus: 'Approved'
-            }
-          ]
-        };
-      })
-    );
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      status: 'Approved',
+      updatedAt: now,
+      headOfOperationApproval: {
+        approvedBy: currentUser.name,
+        approvedAt: now,
+        comments: comments || 'Final operational approval granted.'
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Head of Operation',
+          action: 'Granted Final Approval',
+          comments: comments || 'Final operational approval granted.',
+          previousStatus: 'Pending Head of Operation',
+          newStatus: 'Approved'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   const handleRejectByHeadOfOperation = (reqId: string, reason: string) => {
+    const requestToUpdate = requests.find(request => request.id === reqId);
+
+    if (!requestToUpdate) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
+
     const now = new Date().toISOString();
-    setRequests(prev =>
-      prev.map(r => {
-        if (r.id !== reqId) return r;
-        return {
-          ...r,
-          status: 'Rejected',
-          updatedAt: now,
-          rejectionInfo: {
-            rejectedBy: currentUser.name,
-            rejectedRole: 'Head of Operation',
-            rejectedAt: now,
-            reason
-          },
-          history: [
-            ...r.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: 'Head of Operation',
-              action: 'Rejected Request',
-              comments: reason,
-              previousStatus: 'Pending Head of Operation',
-              newStatus: 'Rejected'
-            }
-          ]
-        };
-      })
-    );
+
+    const updatedRequest: RoadshowRequest = {
+      ...requestToUpdate,
+      status: 'Rejected',
+      updatedAt: now,
+      rejectionInfo: {
+        rejectedBy: currentUser.name,
+        rejectedRole: 'Head of Operation',
+        rejectedAt: now,
+        reason
+      },
+      history: [
+        ...requestToUpdate.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: 'Head of Operation',
+          action: 'Rejected Request',
+          comments: reason,
+          previousStatus: 'Pending Head of Operation',
+          newStatus: 'Rejected'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
   };
 
   // --- Admin User Handlers ---
