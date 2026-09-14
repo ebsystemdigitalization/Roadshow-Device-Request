@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { RoadshowRequest, User, UserRole, PartBDeviceItem, DeviceInventoryItem, ImeiInventoryItem } from './types';
-import { INITIAL_USERS, INITIAL_DEVICE_INVENTORY, INITIAL_IMEI_INVENTORY } from './data/seedData';
+import { INITIAL_USERS } from './data/seedData';
 import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
 import { RequestList } from './components/RequestList';
@@ -22,6 +22,18 @@ import {
   updateRequest
 } from './services/requestApi';
 import { getUsers } from './services/userApi';
+import {
+  deleteDeviceInventoryItem,
+  getDeviceInventory,
+  importDeviceInventory,
+  updateDeviceInventoryItem
+} from './services/deviceInventoryApi';
+import {
+  deleteImeiInventoryItem,
+  getImeiInventory,
+  importImeiInventory,
+  updateImeiInventoryItem
+} from './services/imeiInventoryApi';
 
 function ensureUniqueImeiInventory(items: ImeiInventoryItem[]): ImeiInventoryItem[] {
   const seenIds = new Set<string>();
@@ -56,26 +68,9 @@ export default function App() {
 
   const [requests, setRequests] = useState<RoadshowRequest[]>([]);
 
-  const [deviceInventory, setDeviceInventory] = useState<DeviceInventoryItem[]>(() => {
-    const saved = localStorage.getItem('rdr_device_inventory');
-    if (saved) {
-      try { return JSON.parse(saved); } catch { /* ignore */ }
-    }
-    return INITIAL_DEVICE_INVENTORY;
-  });
+  const [deviceInventory, setDeviceInventory] = useState<DeviceInventoryItem[]>([]);
 
-  const [imeiInventory, setImeiInventory] = useState<ImeiInventoryItem[]>(() => {
-    const saved = localStorage.getItem('rdr_imei_inventory');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          return ensureUniqueImeiInventory(parsed);
-        }
-      } catch { /* ignore */ }
-    }
-    return ensureUniqueImeiInventory(INITIAL_IMEI_INVENTORY);
-  });
+  const [imeiInventory, setImeiInventory] = useState<ImeiInventoryItem[]>([]);
 
   const [activeTab, setActiveTab] = useState<'requests' | 'analytics' | 'admin' | 'imei-inventory'>('requests');
   const [selectedRequest, setSelectedRequest] = useState<RoadshowRequest | null>(null);
@@ -160,6 +155,8 @@ export default function App() {
     if (!isAuthenticated) {
       setUsers([]);
       setRequests([]);
+      setDeviceInventory([]);
+      setImeiInventory([]);
       return;
     }
 
@@ -167,14 +164,23 @@ export default function App() {
 
     const loadApplicationData = async () => {
       try {
-        const [firestoreUsers, firestoreRequests] = await Promise.all([
+        const [
+          firestoreUsers,
+          firestoreRequests,
+          firestoreDeviceInventory,
+          firestoreImeiInventory
+        ] = await Promise.all([
           getUsers(),
-          getRequests()
+          getRequests(),
+          getDeviceInventory(),
+          getImeiInventory()
         ]);
 
         if (!isCancelled) {
           setUsers(firestoreUsers);
           setRequests(firestoreRequests);
+          setDeviceInventory(firestoreDeviceInventory);
+          setImeiInventory(ensureUniqueImeiInventory(firestoreImeiInventory));
         }
       } catch (error) {
         console.error('Unable to load Firestore application data:', error);
@@ -195,15 +201,6 @@ export default function App() {
       isCancelled = true;
     };
   }, [isAuthenticated]);
-
-  // Persist the remaining temporary prototype data to LocalStorage.
-  useEffect(() => {
-    localStorage.setItem('rdr_device_inventory', JSON.stringify(deviceInventory));
-  }, [deviceInventory]);
-
-  useEffect(() => {
-    localStorage.setItem('rdr_imei_inventory', JSON.stringify(imeiInventory));
-  }, [imeiInventory]);
 
   // Ensure non-admin users cannot remain on restricted tabs.
   useEffect(() => {
@@ -257,48 +254,124 @@ export default function App() {
     localStorage.removeItem('rdr_is_authenticated');
     setUsers([]);
     setRequests([]);
-    setDeviceInventory(INITIAL_DEVICE_INVENTORY);
-    setImeiInventory(INITIAL_IMEI_INVENTORY);
+    setDeviceInventory([]);
+    setImeiInventory([]);
     setCurrentUser(INITIAL_USERS[0]);
     setIsAuthenticated(false);
   };
 
   // Handlers for IMEI Inventory
-  const handleUpdateImeiItem = (updated: ImeiInventoryItem) => {
-    setImeiInventory(prev => prev.map(item => item.id === updated.id ? updated : item));
+  const refreshImeiInventory = async () => {
+    const refreshedInventory = await getImeiInventory();
+    setImeiInventory(ensureUniqueImeiInventory(refreshedInventory));
   };
 
-  const handleAddImeiItem = (newItem: ImeiInventoryItem) => {
-    setImeiInventory(prev => [newItem, ...prev]);
+  const handleUpdateImeiItem = async (updated: ImeiInventoryItem) => {
+    try {
+      const savedItem = await updateImeiInventoryItem(updated);
+
+      setImeiInventory(previousInventory =>
+        previousInventory.map(item =>
+          item.id === savedItem.id ? savedItem : item
+        )
+      );
+    } catch (error) {
+      console.error('Unable to update IMEI inventory item:', error);
+      alert(error instanceof Error ? error.message : 'Unable to update the IMEI inventory item.');
+    }
   };
 
-  const handleDeleteImeiItem = (id: string) => {
-    setImeiInventory(prev => prev.filter(item => item.id !== id));
+  const handleAddImeiItem = async (newItem: ImeiInventoryItem) => {
+    try {
+      await importImeiInventory([newItem], true);
+      await refreshImeiInventory();
+    } catch (error) {
+      console.error('Unable to add IMEI inventory item:', error);
+      alert(error instanceof Error ? error.message : 'Unable to add the IMEI inventory item.');
+    }
   };
 
-  const handleBulkAddImeis = (items: ImeiInventoryItem[]) => {
-    setImeiInventory(prev => [...items, ...prev]);
+  const handleDeleteImeiItem = async (id: string) => {
+    try {
+      await deleteImeiInventoryItem(id);
+      setImeiInventory(previousInventory =>
+        previousInventory.filter(item => item.id !== id)
+      );
+    } catch (error) {
+      console.error('Unable to delete IMEI inventory item:', error);
+      alert(error instanceof Error ? error.message : 'Unable to delete the IMEI inventory item.');
+    }
+  };
+
+  const handleBulkAddImeis = async (items: ImeiInventoryItem[]) => {
+    try {
+      await importImeiInventory(items, true);
+      await refreshImeiInventory();
+    } catch (error) {
+      console.error('Unable to import IMEI inventory:', error);
+      alert(error instanceof Error ? error.message : 'Unable to import the IMEI inventory.');
+    }
   };
 
   // --- Handlers for Device Inventory (Device Team & Admin) ---
-  const handleSaveInventory = (importedItems: DeviceInventoryItem[], appendMode: boolean) => {
-    setDeviceInventory(prev => {
-      if (!appendMode) {
-        return importedItems;
-      }
-      // Append mode: retain existing items, append new items
-      return [...prev, ...importedItems];
-    });
+  const handleSaveInventory = async (
+    importedItems: DeviceInventoryItem[],
+    appendMode: boolean
+  ) => {
+    try {
+      await importDeviceInventory(importedItems, appendMode);
+
+      const refreshedInventory = await getDeviceInventory();
+      setDeviceInventory(refreshedInventory);
+    } catch (error) {
+      console.error('Unable to import device inventory:', error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Unable to import the device inventory.'
+      );
+    }
   };
 
-  const handleDeleteInventoryItem = (itemId: string) => {
-    setDeviceInventory(prev => prev.filter(item => item.id !== itemId));
+  const handleDeleteInventoryItem = async (itemId: string) => {
+    try {
+      await deleteDeviceInventoryItem(itemId);
+
+      setDeviceInventory(previousInventory =>
+        previousInventory.filter(item => item.id !== itemId)
+      );
+    } catch (error) {
+      console.error('Unable to delete device inventory item:', error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Unable to delete the device inventory item.'
+      );
+    }
   };
 
-  const handleUpdateInventoryItem = (updatedItem: DeviceInventoryItem) => {
-    setDeviceInventory(prev =>
-      prev.map(item => (item.id === updatedItem.id ? { ...updatedItem, updatedAt: new Date().toISOString() } : item))
-    );
+  const handleUpdateInventoryItem = async (
+    updatedItem: DeviceInventoryItem
+  ) => {
+    try {
+      const savedItem = await updateDeviceInventoryItem(updatedItem);
+
+      setDeviceInventory(previousInventory =>
+        previousInventory.map(item =>
+          item.id === savedItem.id ? savedItem : item
+        )
+      );
+    } catch (error) {
+      console.error('Unable to update device inventory item:', error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : 'Unable to update the device inventory item.'
+      );
+    }
   };
 
   // Check if current user is active Sales Team
@@ -564,123 +637,126 @@ export default function App() {
     });
 
     if (combinedRecords.length > 0) {
-      setImeiInventory(prev => {
-        const nextList = [...prev];
-        combinedRecords.forEach((rec, rIdx) => {
-          const existingIdx = nextList.findIndex(
-            x => (rec.id && x.id === rec.id) || x.imei.trim().toLowerCase() === rec.imei.trim().toLowerCase()
-          );
-          if (existingIdx !== -1) {
-            nextList[existingIdx] = {
-              ...nextList[existingIdx],
-              ...rec,
-              updatedAt: now
-            };
-          } else {
-            nextList.unshift({
-              ...rec,
-              id: rec.id || `imei-${rec.imei}-${Date.now()}-${rIdx}-${Math.random().toString(36).slice(2, 6)}`
-            });
-          }
-        });
-        return ensureUniqueImeiInventory(nextList);
-      });
+      void (async () => {
+        try {
+          await importImeiInventory(combinedRecords, true);
+          await refreshImeiInventory();
+        } catch (error) {
+          console.error('Unable to synchronize IMEI inventory:', error);
+          alert(error instanceof Error ? error.message : 'Unable to synchronize the IMEI inventory.');
+        }
+      })();
     }
   };
 
   const handleSaveImeiDetails = (requestId: string, updatedRecords: ImeiDetailRecord[]) => {
     const now = new Date().toISOString();
 
-    // 1. Update requests state
-    setRequests(prevRequests =>
-      prevRequests.map(req => {
-        if (req.id !== requestId) return req;
+    const targetRequest = requests.find(request => request.id === requestId);
 
-        const updatedPartB = (req.partB || []).map(pItem => {
-          if (!pItem.imei) return pItem;
-          const imeiList = pItem.imei.split(',').map(s => s.trim().toLowerCase());
-          const match = updatedRecords.find(r => imeiList.includes(r.imei.toLowerCase()));
-          if (match) {
-            return {
-              ...pItem,
-              customerName: match.customerName || undefined,
-              nric: match.nric || undefined,
-              sppOrder: match.sppOrder || undefined,
-              mobileNumber: match.mobileNumber || undefined,
-              submissionRemarks: match.submissionRemarks || undefined
-            };
-          }
-          return pItem;
-        });
+    if (!targetRequest) {
+      alert('The roadshow request could not be found.');
+      return;
+    }
 
-        const updatedReq: RoadshowRequest = {
-          ...req,
-          partB: updatedPartB,
-          updatedAt: now,
-          history: [
-            ...req.history,
-            {
-              id: generateId(),
-              timestamp: now,
-              actorName: currentUser.name,
-              actorRole: currentUser.role || 'Sales Team',
-              action: 'Updated IMEI Customer & Order Details'
-            }
-          ]
-        };
+    const updatedPartB = (targetRequest.partB || []).map(partBItem => {
+      if (!partBItem.imei) return partBItem;
 
-        if (selectedRequest && selectedRequest.id === requestId) {
-          setSelectedRequest(updatedReq);
-        }
+      const itemImeis = partBItem.imei
+        .split(',')
+        .map(imei => imei.trim().toLowerCase());
 
-        return updatedReq;
-      })
-    );
+      const matchingRecord = updatedRecords.find(record =>
+        itemImeis.includes(record.imei.toLowerCase())
+      );
 
-    // 2. Update imeiInventory state
-    setImeiInventory(prevInventory => {
-      const nextList = [...prevInventory];
-      const targetReq = requests.find(r => r.id === requestId);
+      if (!matchingRecord) return partBItem;
 
-      updatedRecords.forEach((rec, rIdx) => {
-        const idx = nextList.findIndex(
-          inv => (rec.id && inv.id === rec.id) || inv.imei.trim().toLowerCase() === rec.imei.trim().toLowerCase()
-        );
-        if (idx !== -1) {
-          nextList[idx] = {
-            ...nextList[idx],
-            customerName: rec.customerName || undefined,
-            nric: rec.nric || undefined,
-            sppOrder: rec.sppOrder || undefined,
-            mobileNumber: rec.mobileNumber || undefined,
-            submissionRemarks: rec.submissionRemarks || undefined,
-            updatedAt: now
-          };
-        } else {
-          nextList.unshift({
-            id: rec.id || `imei-${rec.imei}-${Date.now()}-${rIdx}-${Math.random().toString(36).slice(2, 6)}`,
-            imei: rec.imei,
-            material: rec.material,
-            description: rec.description,
-            rrpRM: rec.rrpRM,
-            requestCode: targetReq?.requestCode,
-            requestId: requestId,
-            eventName: targetReq?.partA?.eventName,
-            requestorName: targetReq?.partA?.requestor || targetReq?.createdByName,
-            region: targetReq?.partA?.region,
-            state: targetReq?.partA?.state,
-            customerName: rec.customerName || undefined,
-            nric: rec.nric || undefined,
-            sppOrder: rec.sppOrder || undefined,
-            mobileNumber: rec.mobileNumber || undefined,
-            submissionRemarks: rec.submissionRemarks || undefined,
-            status: (rec.status || 'Assigned') as ImeiInventoryItem['status'],
-            updatedAt: now
-          });
-        }
-      });
-      return ensureUniqueImeiInventory(nextList);
+      return {
+        ...partBItem,
+        customerName: matchingRecord.customerName || undefined,
+        nric: matchingRecord.nric || undefined,
+        sppOrder: matchingRecord.sppOrder || undefined,
+        mobileNumber: matchingRecord.mobileNumber || undefined,
+        submissionRemarks: matchingRecord.submissionRemarks || undefined
+      };
     });
+
+    const updatedRequest: RoadshowRequest = {
+      ...targetRequest,
+      partB: updatedPartB,
+      updatedAt: now,
+      history: [
+        ...targetRequest.history,
+        {
+          id: generateId(),
+          timestamp: now,
+          actorName: currentUser.name,
+          actorRole: currentUser.role || 'Sales Team',
+          action: 'Updated IMEI Customer & Order Details'
+        }
+      ]
+    };
+
+    void persistUpdatedRequest(updatedRequest);
+
+    const existingUpdates: ImeiInventoryItem[] = [];
+    const newItems: ImeiInventoryItem[] = [];
+
+    updatedRecords.forEach((record, index) => {
+      const existingItem = imeiInventory.find(item =>
+        (record.id && item.id === record.id) ||
+        item.imei.trim().toLowerCase() === record.imei.trim().toLowerCase()
+      );
+
+      if (existingItem) {
+        existingUpdates.push({
+          ...existingItem,
+          customerName: record.customerName || undefined,
+          nric: record.nric || undefined,
+          sppOrder: record.sppOrder || undefined,
+          mobileNumber: record.mobileNumber || undefined,
+          submissionRemarks: record.submissionRemarks || undefined,
+          updatedAt: now
+        });
+      } else {
+        newItems.push({
+          id: record.id || `imei-${record.imei}-${Date.now()}-${index}`,
+          imei: record.imei,
+          material: record.material,
+          description: record.description,
+          rrpRM: record.rrpRM,
+          requestCode: targetRequest.requestCode,
+          requestId,
+          eventName: targetRequest.partA.eventName,
+          requestorName: targetRequest.partA.requestor || targetRequest.createdByName,
+          region: targetRequest.partA.region,
+          state: targetRequest.partA.state,
+          customerName: record.customerName || undefined,
+          nric: record.nric || undefined,
+          sppOrder: record.sppOrder || undefined,
+          mobileNumber: record.mobileNumber || undefined,
+          submissionRemarks: record.submissionRemarks || undefined,
+          status: 'Pending Approval',
+          updatedAt: now
+        });
+      }
+    });
+
+    void (async () => {
+      try {
+        await Promise.all(existingUpdates.map(updateImeiInventoryItem));
+
+        if (newItems.length > 0) {
+          await importImeiInventory(newItems, true);
+        }
+
+        await refreshImeiInventory();
+      } catch (error) {
+        console.error('Unable to save IMEI customer details:', error);
+        alert(error instanceof Error ? error.message : 'Unable to save the IMEI customer details.');
+      }
+    })();
   };
 
   const handleApproveByDeviceTeam = (reqId: string, updatedPartB: PartBDeviceItem[], comments: string) => {

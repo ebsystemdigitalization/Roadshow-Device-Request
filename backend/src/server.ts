@@ -20,6 +20,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 const requestsCollection = db.collection('requests');
 const usersCollection = db.collection('users');
 const deviceInventoryCollection = db.collection('device_inventory');
+const imeiInventoryCollection = db.collection('imei_inventory');
 
 interface UserProfile {
   name?: string;
@@ -135,6 +136,73 @@ function canManageDeviceInventory(profile: UserProfile): boolean {
     profile.role === 'Admin' ||
     profile.role === 'Device Team'
   );
+}
+
+function canUpdateImeiInventory(profile: UserProfile): boolean {
+  return (
+    profile.role === 'Admin' ||
+    profile.role === 'Device Team' ||
+    profile.role === 'Sales Team'
+  );
+}
+
+function normaliseImeiInventoryItem(
+  item: Record<string, unknown>,
+  updatedAt: string
+): Record<string, unknown> | null {
+  const imei =
+    typeof item.imei === 'string'
+      ? item.imei.trim()
+      : '';
+
+  const material =
+    typeof item.material === 'string'
+      ? item.material.trim()
+      : '';
+
+  const description =
+    typeof item.description === 'string'
+      ? item.description.trim()
+      : '';
+
+  const rrpRM = Number(item.rrpRM);
+
+  const allowedStatuses = [
+    'HOO Approved',
+    'Pending Approval',
+    'Unassigned Stock'
+  ];
+
+  const status =
+    typeof item.status === 'string' &&
+    allowedStatuses.includes(item.status)
+      ? item.status
+      : 'Unassigned Stock';
+
+  if (
+    !imei ||
+    !material ||
+    !description ||
+    !Number.isFinite(rrpRM)
+  ) {
+    return null;
+  }
+
+  const {
+    id: _ignoredId,
+    updatedAt: _ignoredUpdatedAt,
+    ...otherFields
+  } = item;
+
+  return {
+    ...otherFields,
+    imei,
+    material,
+    description,
+    rrpRM,
+    status,
+    updatedAt
+  };
 }
 
 /*
@@ -799,11 +867,11 @@ app.get(
         .get();
 
       const items = snapshot.docs
-        .map<FirestoreRequestRecord>(document => ({
-        id: document.id,
+       .map<FirestoreRequestRecord>(document => ({
+         id: document.id,
         ...document.data()
-     }))
-      .sort((first, second) => {
+       }))
+        .sort((first, second) => {
           const firstDescription =
             typeof first.description === 'string'
               ? first.description
@@ -1159,6 +1227,353 @@ app.delete(
 
       response.status(500).json({
         message: 'Unable to delete the device inventory item.'
+      });
+    }
+  }
+);
+
+/*
+ * GET /api/imei-inventory
+ */
+app.get(
+  '/api/imei-inventory',
+  requireAuth,
+  async (
+    request: Request,
+    response: Response
+  ) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({
+          message: 'An active RDR user profile is required.'
+        });
+        return;
+      }
+
+      const snapshot = await imeiInventoryCollection
+        .limit(500)
+        .get();
+
+      const items = snapshot.docs
+        .map<FirestoreRequestRecord>(document => ({
+          id: document.id,
+          ...document.data()
+        }))
+        .sort((first, second) => {
+          const firstUpdatedAt =
+            typeof first.updatedAt === 'string'
+              ? first.updatedAt
+              : '';
+
+          const secondUpdatedAt =
+            typeof second.updatedAt === 'string'
+              ? second.updatedAt
+              : '';
+
+          return secondUpdatedAt.localeCompare(firstUpdatedAt);
+        });
+
+      response.status(200).json({ items });
+    } catch (error) {
+      console.error('Unable to retrieve IMEI inventory:', error);
+
+      response.status(500).json({
+        message: 'Unable to retrieve the IMEI inventory.'
+      });
+    }
+  }
+);
+
+/*
+ * POST /api/imei-inventory/import
+ */
+app.post(
+  '/api/imei-inventory/import',
+  requireAuth,
+  async (
+    request: Request,
+    response: Response
+  ) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({
+          message: 'An active RDR user profile is required.'
+        });
+        return;
+      }
+
+      if (!canManageDeviceInventory(profile)) {
+        response.status(403).json({
+          message:
+            'Only Device Team and Admin users may import IMEI inventory.'
+        });
+        return;
+      }
+
+      if (
+        !isRequestBodyValid(request.body) ||
+        !Array.isArray(request.body.items)
+      ) {
+        response.status(400).json({
+          message: 'An IMEI inventory items array is required.'
+        });
+        return;
+      }
+
+      const submittedItems = request.body.items;
+      const appendMode = request.body.appendMode === true;
+
+      if (submittedItems.length === 0) {
+        response.status(400).json({
+          message: 'There are no IMEI inventory items to import.'
+        });
+        return;
+      }
+
+      if (submittedItems.length > 500) {
+        response.status(400).json({
+          message:
+            'A maximum of 500 IMEI inventory items may be imported at once.'
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const validItems: Array<{
+        documentId: string;
+        data: Record<string, unknown>;
+      }> = [];
+
+      for (const submittedItem of submittedItems) {
+        if (!isRequestBodyValid(submittedItem)) {
+          continue;
+        }
+
+        const data = normaliseImeiInventoryItem(
+          submittedItem,
+          now
+        );
+
+        if (!data) {
+          continue;
+        }
+
+        const submittedId =
+          typeof submittedItem.id === 'string'
+            ? submittedItem.id.trim()
+            : '';
+
+        const documentId =
+          submittedId && !submittedId.includes('/')
+            ? submittedId
+            : imeiInventoryCollection.doc().id;
+
+        validItems.push({ documentId, data });
+      }
+
+      if (validItems.length === 0) {
+        response.status(400).json({
+          message: 'No valid IMEI inventory items were supplied.'
+        });
+        return;
+      }
+
+      if (!appendMode) {
+        const existingSnapshot = await imeiInventoryCollection
+          .limit(500)
+          .get();
+
+        if (!existingSnapshot.empty) {
+          const deleteBatch = db.batch();
+
+          existingSnapshot.docs.forEach(document => {
+            deleteBatch.delete(document.ref);
+          });
+
+          await deleteBatch.commit();
+        }
+      }
+
+      const importBatch = db.batch();
+
+      validItems.forEach(item => {
+        importBatch.set(
+          imeiInventoryCollection.doc(item.documentId),
+          item.data
+        );
+      });
+
+      await importBatch.commit();
+
+      response.status(201).json({
+        message: 'IMEI inventory imported successfully.',
+        importedCount: validItems.length,
+        items: validItems.map(item => ({
+          id: item.documentId,
+          ...item.data
+        }))
+      });
+    } catch (error) {
+      console.error('Unable to import IMEI inventory:', error);
+
+      response.status(500).json({
+        message: 'Unable to import the IMEI inventory.'
+      });
+    }
+  }
+);
+
+/*
+ * PUT /api/imei-inventory/:itemId
+ */
+app.put(
+  '/api/imei-inventory/:itemId',
+  requireAuth,
+  async (
+    request: Request,
+    response: Response
+  ) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({
+          message: 'An active RDR user profile is required.'
+        });
+        return;
+      }
+
+      if (!canUpdateImeiInventory(profile)) {
+        response.status(403).json({
+          message:
+            'You do not have permission to update IMEI inventory.'
+        });
+        return;
+      }
+
+      if (!isRequestBodyValid(request.body)) {
+        response.status(400).json({
+          message: 'A valid IMEI inventory item is required.'
+        });
+        return;
+      }
+
+      const itemId = getRouteParameter(request.params.itemId);
+
+      if (!itemId) {
+        response.status(400).json({
+          message: 'An IMEI inventory item ID is required.'
+        });
+        return;
+      }
+
+      const itemDocument = imeiInventoryCollection.doc(itemId);
+      const existingDocument = await itemDocument.get();
+
+      if (!existingDocument.exists) {
+        response.status(404).json({
+          message: 'The IMEI inventory item was not found.'
+        });
+        return;
+      }
+
+      const updatedItem = normaliseImeiInventoryItem(
+        request.body,
+        new Date().toISOString()
+      );
+
+      if (!updatedItem) {
+        response.status(400).json({
+          message:
+            'IMEI, material, description, and a valid RRP are required.'
+        });
+        return;
+      }
+
+      await itemDocument.set(updatedItem);
+
+      response.status(200).json({
+        item: {
+          id: itemDocument.id,
+          ...updatedItem
+        }
+      });
+    } catch (error) {
+      console.error('Unable to update IMEI inventory:', error);
+
+      response.status(500).json({
+        message: 'Unable to update the IMEI inventory item.'
+      });
+    }
+  }
+);
+
+/*
+ * DELETE /api/imei-inventory/:itemId
+ */
+app.delete(
+  '/api/imei-inventory/:itemId',
+  requireAuth,
+  async (
+    request: Request,
+    response: Response
+  ) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({
+          message: 'An active RDR user profile is required.'
+        });
+        return;
+      }
+
+      if (!canManageDeviceInventory(profile)) {
+        response.status(403).json({
+          message:
+            'Only Device Team and Admin users may delete IMEI inventory.'
+        });
+        return;
+      }
+
+      const itemId = getRouteParameter(request.params.itemId);
+
+      if (!itemId) {
+        response.status(400).json({
+          message: 'An IMEI inventory item ID is required.'
+        });
+        return;
+      }
+
+      const itemDocument = imeiInventoryCollection.doc(itemId);
+      const existingDocument = await itemDocument.get();
+
+      if (!existingDocument.exists) {
+        response.status(404).json({
+          message: 'The IMEI inventory item was not found.'
+        });
+        return;
+      }
+
+      await itemDocument.delete();
+
+      response.status(200).json({
+        message: 'IMEI inventory item deleted successfully.',
+        id: itemId
+      });
+    } catch (error) {
+      console.error('Unable to delete IMEI inventory:', error);
+
+      response.status(500).json({
+        message: 'Unable to delete the IMEI inventory item.'
       });
     }
   }
