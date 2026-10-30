@@ -7,6 +7,7 @@ import helmet from 'helmet';
 
 import { db } from './firebase.js';
 import { requireAuth } from './middleware/auth.js';
+import { userRoutes } from './userRoutes.js';
 
 const app = express();
 const port = Number(process.env.PORT) || 8080;
@@ -319,92 +320,8 @@ app.get(
   }
 );
 
-/*
- * GET /api/users
- *
- * Return the active RDR user directory used for workflow routing.
- * Authentication is required. Only approved, non-sensitive fields are
- * returned to the frontend.
- */
-app.get(
-  '/api/users',
-  requireAuth,
-  async (
-    request: Request,
-    response: Response
-  ) => {
-    try {
-      const uid =
-        request.authenticatedUser!.uid;
-
-      const requestingProfile =
-        await getUserProfile(uid);
-
-      if (!requestingProfile) {
-        response.status(403).json({
-          message:
-            'No RDR user profile exists for this account.'
-        });
-        return;
-      }
-
-      if (!isUserActive(requestingProfile)) {
-        response.status(403).json({
-          message:
-            'This RDR user account is inactive.'
-        });
-        return;
-      }
-
-      const snapshot = await usersCollection
-        .limit(500)
-        .get();
-
-      const users = snapshot.docs
-        .map(document => {
-          const profile =
-            document.data() as UserProfile;
-
-          return {
-            id: document.id,
-            name: profile.name || '',
-            email: profile.email || '',
-            role: profile.role || '',
-            state: profile.state || '',
-            region: profile.region || '',
-            avatarUrl: profile.avatarUrl,
-            headOfUnit: profile.headOfUnit,
-            headOfSales: profile.headOfSales,
-            headOfDepartment:
-              profile.headOfDepartment,
-            userStatus:
-              profile.userStatus ||
-              profile.status ||
-              'Active',
-            status: profile.status
-          };
-        })
-        .filter(user => user.userStatus !== 'Inactive')
-        .sort((first, second) =>
-          first.name.localeCompare(second.name)
-        );
-
-      response.status(200).json({
-        users
-      });
-    } catch (error) {
-      console.error(
-        'Unable to retrieve users:',
-        error
-      );
-
-      response.status(500).json({
-        message:
-          'Unable to retrieve the RDR user directory.'
-      });
-    }
-  }
-);
+// User directory and administrator onboarding endpoints.
+app.use('/api/users', userRoutes);
 
 /*
  * GET /api/requests

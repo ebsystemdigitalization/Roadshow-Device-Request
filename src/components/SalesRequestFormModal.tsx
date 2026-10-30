@@ -455,7 +455,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
               <button
                 id="btn-add-device-row"
                 type="button"
-                onClick={handleAddDeviceRow}
+                onClick={() => handleAddDeviceRow()}
                 className="inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
               >
                 <Plus className="w-4 h-4" />

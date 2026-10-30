@@ -1,6 +1,6 @@
 import React from 'react';
 import { User, UserRole } from '../types';
-import { Smartphone, Users, ShieldAlert, ChevronDown, Check, Layers, BarChart3, Plus, Upload, Barcode, LogOut } from 'lucide-react';
+import { Smartphone, Users, Layers, BarChart3, Plus, Upload, Barcode, LogOut } from 'lucide-react';
 
 interface NavbarProps {
   currentUser: User;
@@ -16,8 +16,6 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
-  allUsers,
-  onSelectUser,
   activeTab,
   onSelectTab,
   onOpenCreateModal,
@@ -25,7 +23,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
   pendingCount = 0
 }) => {
-  const [dropdownOpen, setDropdownOpen] = React.useState(false);
 
   const getRoleBadgeColor = (role: UserRole) => {
     switch (role) {
@@ -41,86 +38,10 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header id="app-header" className="bg-slate-900 text-white sticky top-0 z-40 shadow-md">
-      {/* Top Session / Persona Bar */}
+      {/* Signed-in account */}
       <div className="bg-slate-800/90 border-b border-slate-700/60 px-4 py-1.5 text-xs flex flex-wrap items-center justify-between gap-2">
-        {currentUser.role === 'Admin' ? (
-          <>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1 font-medium text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded border border-amber-800/50">
-                <ShieldAlert className="w-3.5 h-3.5" />
-                Interactive Persona Simulation:
-              </span>
-              <span className="text-slate-300">
-                Switch user below to test role-specific workflows
-              </span>
-            </div>
-
-            {/* Admin User Switcher Dropdown & Logout */}
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <button
-                  id="btn-user-switcher"
-                  onClick={() => setDropdownOpen(!dropdownOpen)}
-                  className="flex items-center gap-2 bg-slate-700/80 hover:bg-slate-700 text-slate-100 px-2.5 py-1 rounded border border-slate-600 transition-colors cursor-pointer text-xs font-medium"
-                >
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Switch Role:</span>
-                  <span className="font-semibold text-white">{currentUser.name}</span>
-                  <span className={`text-[10px] px-1.5 py-0.2 rounded border ${getRoleBadgeColor(currentUser.role)}`}>
-                    {currentUser.role}
-                  </span>
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                </button>
-
-                {dropdownOpen && (
-                  <div className="absolute right-0 mt-1 w-72 bg-white text-slate-900 rounded-lg shadow-xl border border-slate-200 py-1 z-50">
-                    <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                      Select Active User Persona
-                    </div>
-                    <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
-                      {allUsers
-                        .filter(u => (u.userStatus || u.status || 'Active') === 'Active')
-                        .map((u) => (
-                        <button
-                          key={u.id}
-                          onClick={() => {
-                            onSelectUser(u);
-                            setDropdownOpen(false);
-                          }}
-                          className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-slate-50 transition-colors text-xs ${
-                            u.id === currentUser.id ? 'bg-blue-50/80 font-medium' : ''
-                          }`}
-                        >
-                          <div>
-                            <div className="font-medium text-slate-800 leading-tight">{u.name}</div>
-                            <div className="text-[11px] text-slate-500">{u.role} &bull; {u.region}</div>
-                          </div>
-                          {u.id === currentUser.id && (
-                            <Check className="w-4 h-4 text-blue-600" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {onLogout && (
-                <button
-                  id="btn-navbar-logout-top"
-                  onClick={onLogout}
-                  className="flex items-center gap-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 hover:text-rose-200 px-2.5 py-1 rounded border border-rose-400/30 text-xs font-semibold transition-all cursor-pointer"
-                  title="Log out of the system"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>Log Out</span>
-                </button>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex items-center justify-end gap-3 w-full ml-auto">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-3 w-full ml-auto">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400" />
               <span className="text-slate-400">Active User:</span>
               <span className="font-semibold text-white">{currentUser.name}</span>
@@ -130,7 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </span>
             </div>
 
-            {/* Non-Admin Logout Button */}
+            {/* Logout Button */}
             {onLogout && (
               <button
                 id="btn-navbar-logout-top"
@@ -143,7 +64,6 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             )}
           </div>
-        )}
       </div>
 
       {/* Main Navbar */}

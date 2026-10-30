@@ -3,6 +3,7 @@ import { RoadshowRequest, User, UserRole, PartBDeviceItem, DeviceInventoryItem, 
 import { INITIAL_USERS } from './data/seedData';
 import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
+import { SsoLoginPage } from './components/SsoLoginPage';
 import { RequestList } from './components/RequestList';
 import { RequestDetailModal } from './components/RequestDetailModal';
 import { SalesRequestFormModal } from './components/SalesRequestFormModal';
@@ -21,7 +22,7 @@ import {
   getRequests,
   updateRequest
 } from './services/requestApi';
-import { getUsers } from './services/userApi';
+import { getUsers, saveApprovedUsers } from './services/userApi';
 import {
   deleteDeviceInventoryItem,
   getDeviceInventory,
@@ -1067,30 +1068,24 @@ export default function App() {
   };
 
   // --- Admin User Handlers ---
-  const handleAddUser = (user: User) => {
-    setUsers(prev => [...prev, user]);
+  const persistUsers = async (records: User[]) => {
+    await saveApprovedUsers(records);
+    const refreshedUsers = await getUsers();
+    setUsers(refreshedUsers);
+    const self = refreshedUsers.find(u => u.id === currentUser.id);
+    if (self) setCurrentUser(self);
   };
 
-  const handleBulkAddUsers = (newUsers: User[], replaceMode: boolean) => {
-    if (replaceMode) {
-      setUsers(prev => [
-        ...prev.filter(u => u.role === 'Admin'),
-        ...newUsers
-      ]);
-    } else {
-      setUsers(prev => [...prev, ...newUsers]);
-    }
+  const handleAddUser = async (user: User) => { await persistUsers([user]); };
+  const handleBulkAddUsers = async (newUsers: User[], replaceMode: boolean) => {
+    if (replaceMode) throw new Error('Use add/update by email. Replacement mode is disabled.');
+    await persistUsers(newUsers);
   };
-
-  const handleUpdateUser = (updatedUser: User) => {
-    setUsers(prev => prev.map(u => (u.id === updatedUser.id ? updatedUser : u)));
-    if (currentUser.id === updatedUser.id) {
-      setCurrentUser(updatedUser);
-    }
-  };
-
-  const handleDeleteUser = (userId: string) => {
-    setUsers(prev => prev.filter(u => u.id !== userId));
+  const handleUpdateUser = async (user: User) => { await persistUsers([user]); };
+  const handleDeleteUser = async (id: string) => {
+    const user = users.find(u => u.id === id);
+    if (!user) throw new Error('User not found. Refresh and try again.');
+    await persistUsers([{ ...user, userStatus: 'Inactive', status: 'Inactive' }]);
   };
 
   // Calculate pending count for current role
@@ -1130,9 +1125,15 @@ export default function App() {
       </div>
     );
   }
-  // If not logged in, show Login Page
+  // Choose the login page using the website path.
   if (!isAuthenticated) {
-    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    const path = window.location.pathname.replace(/\/+$/, '');
+
+    if (path === '/admin/login') {
+      return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+    }
+
+    return <SsoLoginPage />;
   }
 
   return (

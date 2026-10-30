@@ -1055,16 +1055,34 @@ export const ImeiDetailModal: React.FC<ImeiDetailModalProps> = ({
                     <th className="py-3 px-3.5 w-10 text-center">#</th>
                     <th className="py-3 px-3.5">
                       Device IMEI Number
-                      {isEditing && <Lock className="w-3 h-3 inline ml-1 text-slate-400" title="Read-only" />}
-                    </th>
+{isEditing && (
+  <span title="Read-only">
+    <Lock
+      className="w-3 h-3 inline ml-1 text-slate-400"
+      aria-label="Read-only"
+    />
+  </span>
+)}                    </th>
                     <th className="py-3 px-3.5">
                       Material & Model Description
-                      {isEditing && <Lock className="w-3 h-3 inline ml-1 text-slate-400" title="Read-only" />}
-                    </th>
+{isEditing && (
+  <span title="Read-only">
+    <Lock
+      className="w-3 h-3 inline ml-1 text-slate-400"
+      aria-label="Read-only"
+    />
+  </span>
+)}                    </th>
                     <th className="py-3 px-3.5">
                       RRP (RM)
-                      {isEditing && <Lock className="w-3 h-3 inline ml-1 text-slate-400" title="Read-only" />}
-                    </th>
+{isEditing && (
+  <span title="Read-only">
+    <Lock
+      className="w-3 h-3 inline ml-1 text-slate-400"
+      aria-label="Read-only"
+    />
+  </span>
+)}                    </th>
                     <th className="py-3 px-3.5">
                       Customer Name
                       {isEditing && <span className="text-indigo-600 font-normal text-[10px] ml-1">(Editable)</span>}

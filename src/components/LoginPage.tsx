@@ -183,12 +183,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           <div className="mb-6 pb-4 border-b border-slate-100">
             <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
               <LogIn className="w-5 h-5 text-indigo-600" />
-              Sign in to your account
+              Administrator sign in
             </h2>
 
             <p className="text-xs text-slate-500 mt-1">
-              Use your registered Firebase Authentication email
-              address and password
+              Use your registered administrator email address and password
             </p>
           </div>
 
@@ -299,7 +298,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 ) : (
                   <>
                     <LogIn className="w-4 h-4" />
-                    <span>Sign In to Portal</span>
+                    <span>Sign In as Administrator</span>
                   </>
                 )}
               </button>

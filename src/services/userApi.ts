@@ -48,3 +48,19 @@ export async function getUsers(): Promise<User[]> {
 
   return (payload as UsersResponse).users;
 }
+
+export async function saveApprovedUsers(users: User[]): Promise<void> {
+  if (!auth.currentUser) throw new Error('Please sign in again.');
+  const token = await auth.currentUser.getIdToken();
+  const response = await fetch(`${apiBaseUrl}/api/users/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ users: users.map(u => ({
+      name: u.name, email: u.email, role: u.role, state: u.state, region: u.region,
+      headOfUnit: u.headOfUnit, headOfSales: u.headOfSales,
+      headOfDepartment: u.headOfDepartment, userStatus: u.userStatus || u.status || 'Active'
+    })) })
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || 'Unable to save users.');
+}
