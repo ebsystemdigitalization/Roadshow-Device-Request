@@ -199,6 +199,14 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
       setValidationError('Please add at least one device item.');
       return;
     }
+    if (
+      partA.startDate &&
+      partA.endDate &&
+      partA.endDate < partA.startDate
+    ) {
+      setValidationError('End Date cannot be earlier than Start Date.');
+      return;
+    }
 
     setValidationError(null);
 
@@ -403,6 +411,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
                 <input
                   type="date"
                   value={partA.endDate}
+                  min={partA.startDate}
                   onChange={e => setPartA({ ...partA, endDate: e.target.value })}
                   className="w-full border border-slate-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                 />

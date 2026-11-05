@@ -4,6 +4,52 @@ import { DeviceInventoryItem, UserRole, DeviceStatus } from '../types';
 import { parseDeviceInventoryCSV, generateSampleDeviceInventoryCSV, exportDeviceInventoryCSV, formatRM, generateId } from '../utils/formatters';
 import { Upload, Download, FileText, CheckCircle2, AlertCircle, X, Layers, Plus, Trash2, Search, Database, Smartphone, Edit2, Check, FileSpreadsheet, ChevronDown } from 'lucide-react';
 
+function getInventoryHeaderError(text: string): string | null {
+  try {
+    const workbook = XLSX.read(text, { type: 'string', raw: false });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) {
+      return 'The uploaded file is empty. Use the device inventory template and include at least one item.';
+    }
+
+    const worksheet = workbook.Sheets[firstSheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
+      raw: false,
+      defval: '',
+      blankrows: false
+    }) as unknown[][];
+    const headerRow = rows.find(row =>
+      row.some(value => String(value ?? '').trim() !== '')
+    );
+
+    if (!headerRow) {
+      return 'The uploaded file is empty. Use the device inventory template and include at least one item.';
+    }
+
+    const headers = headerRow.map(value =>
+      String(value ?? '').replace(/^\uFEFF/, '').trim().toLowerCase()
+    );
+    const requiredHeaders = [
+      { label: 'Material', matches: (header: string) => header.includes('material') },
+      { label: 'Descriptions', matches: (header: string) => header.includes('desc') },
+      { label: 'RRP (RM)', matches: (header: string) => header.includes('rrp') || header.includes('price') },
+      { label: 'Remarks', matches: (header: string) => header.includes('remark') }
+    ];
+    const missingHeaders = requiredHeaders
+      .filter(required => !headers.some(required.matches))
+      .map(required => required.label);
+
+    if (missingHeaders.length > 0) {
+      return `Invalid device inventory headers. Missing: ${missingHeaders.join(', ')}. Use the provided device inventory template.`;
+    }
+
+    return null;
+  } catch {
+    return 'Could not read the file headers. Please upload a valid device inventory CSV or Excel template.';
+  }
+}
+
 interface DeviceInventoryUploadModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -124,7 +170,14 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     setCsvContent(text);
     if (!text.trim()) {
       setParsedItems([]);
-      setErrorMsg(null);
+      setErrorMsg('The uploaded file is empty. Use the device inventory template and include at least one item.');
+      return;
+    }
+
+    const headerError = getInventoryHeaderError(text);
+    if (headerError) {
+      setParsedItems([]);
+      setErrorMsg(headerError);
       return;
     }
     try {
@@ -136,6 +189,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
         setErrorMsg(null);
       }
     } catch {
+      setParsedItems([]);
       setErrorMsg('Error parsing CSV format. Please check syntax.');
     }
   };
@@ -153,15 +207,21 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           const buffer = event.target?.result as ArrayBuffer;
           const workbook = XLSX.read(buffer, { type: 'array' });
           const firstSheetName = workbook.SheetNames[0];
+          if (!firstSheetName) {
+            handleTextChange('');
+            return;
+          }
           const worksheet = workbook.Sheets[firstSheetName];
           const csvText = XLSX.utils.sheet_to_csv(worksheet);
           handleTextChange(csvText);
         } catch (err) {
           console.error(err);
+          setParsedItems([]);
           setErrorMsg('Failed to parse Excel file. Please ensure it is a valid .xlsx or .xls file.');
         }
       };
       reader.onerror = () => {
+        setParsedItems([]);
         setErrorMsg('Failed to read uploaded Excel file.');
       };
       reader.readAsArrayBuffer(file);
@@ -169,11 +229,10 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
       const reader = new FileReader();
       reader.onload = (event) => {
         const text = event.target?.result as string;
-        if (text) {
-          handleTextChange(text);
-        }
+        handleTextChange(text || '');
       };
       reader.onerror = () => {
+        setParsedItems([]);
         setErrorMsg('Failed to read uploaded CSV file.');
       };
       reader.readAsText(file);

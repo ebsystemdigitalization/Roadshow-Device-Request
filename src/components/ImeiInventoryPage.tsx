@@ -37,6 +37,61 @@ import {
   Sparkles
 } from 'lucide-react';
 
+function normalizeMobileNumber(value?: string): string {
+  if (!value) return '';
+
+  let normalized = value.replace(/[\s\-().]/g, '').trim();
+  if (normalized.startsWith('+60')) {
+    normalized = '0' + normalized.slice(3);
+  } else if (normalized.startsWith('60') && normalized.length >= 10) {
+    normalized = '0' + normalized.slice(2);
+  }
+
+  return normalized.toLowerCase();
+}
+
+function findDuplicateValues(
+  values: Array<string | undefined>,
+  normalize: (value: string) => string
+): string[] {
+  const counts = new Map<string, { displayValue: string; count: number }>();
+
+  for (const rawValue of values) {
+    const displayValue = (rawValue || '').trim();
+    const key = normalize(displayValue);
+    if (!key) continue;
+
+    const existing = counts.get(key) || { displayValue, count: 0 };
+    existing.count += 1;
+    counts.set(key, existing);
+  }
+
+  return Array.from(counts.values())
+    .filter(item => item.count > 1)
+    .map(item => item.displayValue);
+}
+
+function findValuesAlreadyInInventory(
+  incoming: Array<string | undefined>,
+  existing: Array<string | undefined>,
+  normalize: (value: string) => string
+): string[] {
+  const existingKeys = new Set(
+    existing.map(value => normalize((value || '').trim())).filter(Boolean)
+  );
+  const found = new Map<string, string>();
+
+  for (const rawValue of incoming) {
+    const displayValue = (rawValue || '').trim();
+    const key = normalize(displayValue);
+    if (key && existingKeys.has(key) && !found.has(key)) {
+      found.set(key, displayValue);
+    }
+  }
+
+  return Array.from(found.values());
+}
+
 interface ImeiInventoryPageProps {
   currentUser: User;
   imeiList: ImeiInventoryItem[];
@@ -1061,6 +1116,47 @@ export const ImeiInventoryPage: React.FC<ImeiInventoryPageProps> = ({
 
     if (systemDupes.length > 0) {
       setBulkErrorMsg(`Duplicate Device IMEI No detected: ${systemDupes.slice(0, 3).map(d => `"${d.imei}"`).join(', ')}${systemDupes.length > 3 ? ` and ${systemDupes.length - 3} more` : ''} already exist in the IMEI Inventory.`);
+      return;
+    }
+
+    // Reject the whole upload if SPP Order No values repeat within the file.
+    const duplicateSppOrders = findDuplicateValues(
+      recordsToImport.map(rec => rec.sppOrder),
+      value => value.toLowerCase()
+    );
+    if (duplicateSppOrders.length > 0) {
+      setBulkErrorMsg(`Duplicate SPP Order No detected in uploaded file: ${duplicateSppOrders.slice(0, 3).map(value => `"${value}"`).join(', ')}${duplicateSppOrders.length > 3 ? ` and ${duplicateSppOrders.length - 3} more` : ''}. Each SPP Order No must be unique.`);
+      return;
+    }
+
+    // Reject the whole upload if Mobile Number values repeat within the file.
+    const duplicateMobileNumbers = findDuplicateValues(
+      recordsToImport.map(rec => rec.mobileNumber),
+      normalizeMobileNumber
+    );
+    if (duplicateMobileNumbers.length > 0) {
+      setBulkErrorMsg(`Duplicate Mobile Number detected in uploaded file: ${duplicateMobileNumbers.slice(0, 3).map(value => `"${value}"`).join(', ')}${duplicateMobileNumbers.length > 3 ? ` and ${duplicateMobileNumbers.length - 3} more` : ''}. Each Mobile Number must be unique.`);
+      return;
+    }
+
+    // Also reject SPP/mobile values already assigned in the current inventory.
+    const existingSppDuplicates = findValuesAlreadyInInventory(
+      recordsToImport.map(rec => rec.sppOrder),
+      imeiList.map(item => item.sppOrder),
+      value => value.toLowerCase()
+    );
+    if (existingSppDuplicates.length > 0) {
+      setBulkErrorMsg(`Duplicate SPP Order No already exists in IMEI Inventory: ${existingSppDuplicates.slice(0, 3).map(value => `"${value}"`).join(', ')}${existingSppDuplicates.length > 3 ? ` and ${existingSppDuplicates.length - 3} more` : ''}.`);
+      return;
+    }
+
+    const existingMobileDuplicates = findValuesAlreadyInInventory(
+      recordsToImport.map(rec => rec.mobileNumber),
+      imeiList.map(item => item.mobileNumber),
+      normalizeMobileNumber
+    );
+    if (existingMobileDuplicates.length > 0) {
+      setBulkErrorMsg(`Duplicate Mobile Number already exists in IMEI Inventory: ${existingMobileDuplicates.slice(0, 3).map(value => `"${value}"`).join(', ')}${existingMobileDuplicates.length > 3 ? ` and ${existingMobileDuplicates.length - 3} more` : ''}.`);
       return;
     }
 

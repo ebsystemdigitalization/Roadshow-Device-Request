@@ -206,6 +206,62 @@ function normaliseImeiInventoryItem(
   };
 }
 
+function normalizeInventoryTextKey(value: unknown): string {
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+  return String(value).trim().toLowerCase();
+}
+
+function normalizeInventoryMobileKey(value: unknown): string {
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+
+  let normalized = String(value).replace(/[\s\-().]/g, '').trim();
+  if (normalized.startsWith('+60')) {
+    normalized = '0' + normalized.slice(3);
+  } else if (normalized.startsWith('60') && normalized.length >= 10) {
+    normalized = '0' + normalized.slice(2);
+  }
+
+  return normalized.toLowerCase();
+}
+
+function findDuplicateInventoryValues(
+  values: unknown[],
+  normalize: (value: unknown) => string
+): string[] {
+  const counts = new Map<string, { displayValue: string; count: number }>();
+
+  for (const rawValue of values) {
+    const key = normalize(rawValue);
+    if (!key) continue;
+
+    const displayValue = String(rawValue).trim();
+    const existing = counts.get(key) || { displayValue, count: 0 };
+    existing.count += 1;
+    counts.set(key, existing);
+  }
+
+  return Array.from(counts.values())
+    .filter(item => item.count > 1)
+    .map(item => item.displayValue);
+}
+
+function findValuesAlreadyImported(
+  incoming: unknown[],
+  existing: unknown[],
+  normalize: (value: unknown) => string
+): string[] {
+  const existingKeys = new Set(existing.map(normalize).filter(Boolean));
+  const found = new Map<string, string>();
+
+  for (const rawValue of incoming) {
+    const key = normalize(rawValue);
+    if (!key || !existingKeys.has(key) || found.has(key)) continue;
+    found.set(key, String(rawValue).trim());
+  }
+
+  return Array.from(found.values());
+}
+
 /*
  * Public API information
  */
@@ -1261,16 +1317,14 @@ app.post(
         return;
       }
 
+      const submittedItemRecords = submittedItems.filter(isRequestBodyValid);
       const now = new Date().toISOString();
       const validItems: Array<{
         documentId: string;
         data: Record<string, unknown>;
       }> = [];
 
-      for (const submittedItem of submittedItems) {
-        if (!isRequestBodyValid(submittedItem)) {
-          continue;
-        }
+      for (const submittedItem of submittedItemRecords) {
 
         const data = normaliseImeiInventoryItem(
           submittedItem,
@@ -1299,6 +1353,100 @@ app.post(
           message: 'No valid IMEI inventory items were supplied.'
         });
         return;
+      }
+
+      // Validate the full submitted batch before writing or deleting any rows.
+      const batchDuplicateMessages: string[] = [];
+      const duplicateImeiValues = findDuplicateInventoryValues(
+        submittedItemRecords.map(item => item.imei),
+        normalizeInventoryTextKey
+      );
+      const duplicateSppValues = findDuplicateInventoryValues(
+        submittedItemRecords.map(item => item.sppOrder),
+        normalizeInventoryTextKey
+      );
+      const duplicateMobileValues = findDuplicateInventoryValues(
+        submittedItemRecords.map(item => item.mobileNumber),
+        normalizeInventoryMobileKey
+      );
+
+      const formatDuplicateValues = (values: string[]) =>
+        values.slice(0, 3).map(value => `"${value}"`).join(', ') +
+        (values.length > 3 ? ` and ${values.length - 3} more` : '');
+
+      if (duplicateImeiValues.length > 0) {
+        batchDuplicateMessages.push(
+          `Duplicate Device IMEI No in uploaded file: ${formatDuplicateValues(duplicateImeiValues)}.`
+        );
+      }
+      if (duplicateSppValues.length > 0) {
+        batchDuplicateMessages.push(
+          `Duplicate SPP Order No in uploaded file: ${formatDuplicateValues(duplicateSppValues)}.`
+        );
+      }
+      if (duplicateMobileValues.length > 0) {
+        batchDuplicateMessages.push(
+          `Duplicate Mobile Number in uploaded file: ${formatDuplicateValues(duplicateMobileValues)}.`
+        );
+      }
+
+      if (batchDuplicateMessages.length > 0) {
+        response.status(409).json({
+          message: batchDuplicateMessages.join(' '),
+          importedCount: 0
+        });
+        return;
+      }
+
+      // Append imports must also be unique against records already stored.
+      if (appendMode) {
+        const existingSnapshot = await imeiInventoryCollection
+          .limit(500)
+          .get();
+        const existingItems = existingSnapshot.docs.map(document =>
+          document.data() as Record<string, unknown>
+        );
+        const existingDuplicateMessages: string[] = [];
+
+        const existingImeiValues = findValuesAlreadyImported(
+          validItems.map(item => item.data.imei),
+          existingItems.map(item => item.imei),
+          normalizeInventoryTextKey
+        );
+        const existingSppValues = findValuesAlreadyImported(
+          validItems.map(item => item.data.sppOrder),
+          existingItems.map(item => item.sppOrder),
+          normalizeInventoryTextKey
+        );
+        const existingMobileValues = findValuesAlreadyImported(
+          validItems.map(item => item.data.mobileNumber),
+          existingItems.map(item => item.mobileNumber),
+          normalizeInventoryMobileKey
+        );
+
+        if (existingImeiValues.length > 0) {
+          existingDuplicateMessages.push(
+            `Device IMEI No already exists in IMEI Inventory: ${formatDuplicateValues(existingImeiValues)}.`
+          );
+        }
+        if (existingSppValues.length > 0) {
+          existingDuplicateMessages.push(
+            `SPP Order No already exists in IMEI Inventory: ${formatDuplicateValues(existingSppValues)}.`
+          );
+        }
+        if (existingMobileValues.length > 0) {
+          existingDuplicateMessages.push(
+            `Mobile Number already exists in IMEI Inventory: ${formatDuplicateValues(existingMobileValues)}.`
+          );
+        }
+
+        if (existingDuplicateMessages.length > 0) {
+          response.status(409).json({
+            message: existingDuplicateMessages.join(' '),
+            importedCount: 0
+          });
+          return;
+        }
       }
 
       if (!appendMode) {
