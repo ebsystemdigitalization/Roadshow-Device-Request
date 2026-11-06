@@ -414,8 +414,20 @@ app.get(
         return;
       }
 
+      // Sales users may only retrieve requests they created.
+      // Keep this restriction in the API so it cannot be bypassed
+      // by calling the endpoint directly.
+      const requestQuery =
+        profile.role === 'Sales Team'
+          ? requestsCollection.where(
+              'createdByUserId',
+              '==',
+              uid
+            )
+          : requestsCollection;
+
       const snapshot =
-        await requestsCollection
+        await requestQuery
           .limit(500)
           .get();
 
@@ -657,6 +669,21 @@ app.put(
         response.status(403).json({
           message:
             'You do not have permission to update this request.'
+        });
+        return;
+      }
+
+      // A Sales request creator may edit their request, but cannot
+      // approve it by writing a status directly through this endpoint.
+      if (
+        profile.role === 'Sales Team' &&
+        existingData.createdByUserId === uid &&
+        request.body.status === 'Approved' &&
+        existingData.status !== 'Approved'
+      ) {
+        response.status(403).json({
+          message:
+            'Request creators cannot approve their own requests.'
         });
         return;
       }
