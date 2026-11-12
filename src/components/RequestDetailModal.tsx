@@ -42,8 +42,6 @@ interface RequestDetailModalProps {
   onRejectByHeadOfSales?: (reqId: string, reason: string) => void;
   onOpenDeviceTeamEdit?: (req: RoadshowRequest) => void;
   onSaveDeviceEditsOnly?: (reqId: string, updatedPartB: PartBDeviceItem[], imeiRecords?: ImeiInventoryItem[]) => void;
-  onAcceptBySalesTeam?: (reqId: string, comments: string) => void;
-  onRejectBySalesTeam?: (reqId: string, reason: string) => void;
   onApproveByHeadOfOperation?: (reqId: string, comments: string) => void;
   onRejectByHeadOfOperation?: (reqId: string, reason: string) => void;
   onSaveImeiDetails?: (requestId: string, updatedRecords: ImeiDetailRecord[]) => void;
@@ -62,8 +60,6 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   onRejectByHeadOfSales,
   onOpenDeviceTeamEdit,
   onSaveDeviceEditsOnly,
-  onAcceptBySalesTeam,
-  onRejectBySalesTeam,
   onApproveByHeadOfOperation,
   onRejectByHeadOfOperation,
   onSaveImeiDetails
@@ -71,7 +67,6 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   if (!isOpen || !request) return null;
 
   const [hosComments, setHosComments] = useState('');
-  const [salesComments, setSalesComments] = useState('');
   const [hooComments, setHooComments] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [isRejecting, setIsRejecting] = useState(false);
@@ -93,13 +88,15 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   const isUnderDeviceReview = request.status === 'Under Review';
 
   const isHeadOfOps = currentUser.role === 'Head of Operation';
-  const isPendingHoo = request.status === 'Pending Head of Operation';
+  const isPendingHoo = request.status === 'Pending Head of Operation' || request.status === 'Pending Sales Acceptance';
 
-  const isPendingSalesAcceptance = request.status === 'Pending Sales Acceptance';
-  const isSalesTeamMember = currentUser.role === 'Sales Team' || currentUser.role === 'Admin';
 
   const isOwnerSales = currentUser.role === 'Sales Team' && (request.createdByUserId === currentUser.id || currentUser.role === 'Sales Team');
   const isDraftOrRejected = request.status === 'Draft' || request.status === 'Rejected';
+  const headOfSalesRejection = [...(request.history || [])].reverse().find(log =>
+    log.actorRole === 'Head of Sales' && log.action === 'Rejected Request'
+  );
+  const showHeadOfSalesRejection = !request.headOfSalesApproval && Boolean(headOfSalesRejection);
 
   const handlePrint = () => {
     window.print();
@@ -116,21 +113,6 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
     if (!(rejectReason || '').trim()) return;
     if (onRejectByHeadOfSales) {
       onRejectByHeadOfSales(request.id, rejectReason);
-      onClose();
-    }
-  };
-
-  const handleConfirmSalesAccept = () => {
-    if (onAcceptBySalesTeam) {
-      onAcceptBySalesTeam(request.id, salesComments);
-      onClose();
-    }
-  };
-
-  const handleConfirmSalesReject = () => {
-    if (!(rejectReason || '').trim()) return;
-    if (onRejectBySalesTeam) {
-      onRejectBySalesTeam(request.id, rejectReason);
       onClose();
     }
   };
@@ -220,7 +202,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            <StatusBadge status={request.status} size="lg" />
+            <StatusBadge status={request.status === 'Pending Sales Acceptance' ? 'Pending Head of Operation' : request.status} size="lg" />
             <button
               id="btn-close-detail-modal"
               onClick={onClose}
@@ -603,12 +585,12 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           })()}
 
           {/* Approvals Summary Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-2">
             {/* Head of Sales Signoff */}
             <div className={`p-3.5 rounded-xl border text-xs ${
               request.headOfSalesApproval
                 ? 'bg-emerald-50/70 border-emerald-200'
-                : request.rejectionInfo?.rejectedRole === 'Head of Sales'
+                : (request.rejectionInfo?.rejectedRole === 'Head of Sales' || showHeadOfSalesRejection)
                 ? 'bg-rose-50/70 border-rose-200'
                 : 'bg-slate-50 border-slate-200'
             }`}>
@@ -616,7 +598,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                 <span className="font-bold text-slate-800">1. Head of Sales</span>
                 {request.headOfSalesApproval ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                ) : request.rejectionInfo?.rejectedRole === 'Head of Sales' ? (
+                ) : request.rejectionInfo?.rejectedRole === 'Head of Sales' || showHeadOfSalesRejection ? (
                   <XCircle className="w-4 h-4 text-rose-600" />
                 ) : (
                   <span className="text-[10px] text-amber-700 font-medium">Pending</span>
@@ -630,8 +612,8 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                     <p className="text-[11px] text-slate-600 mt-1 italic">"{request.headOfSalesApproval.comments}"</p>
                   )}
                 </div>
-              ) : request.rejectionInfo?.rejectedRole === 'Head of Sales' ? (
-                <p className="text-[11px] text-rose-700 italic">Rejected: "{request.rejectionInfo.reason}"</p>
+              ) : request.rejectionInfo?.rejectedRole === 'Head of Sales' || showHeadOfSalesRejection ? (
+                <p className="text-[11px] text-rose-700 italic">Returned by {headOfSalesRejection?.actorName || request.rejectionInfo?.rejectedBy}: "{headOfSalesRejection?.comments || request.rejectionInfo?.reason || 'Request returned for amendment'}"</p>
               ) : (
                 <p className="text-[11px] text-slate-400">Awaiting Head of Sales review</p>
               )}
@@ -670,42 +652,6 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
               )}
             </div>
 
-            {/* Sales Team Acceptance */}
-            <div className={`p-3.5 rounded-xl border text-xs ${
-              request.status === 'Pending Head of Operation' || request.status === 'Approved'
-                ? 'bg-emerald-50/70 border-emerald-200'
-                : request.status === 'Pending Sales Acceptance'
-                ? 'bg-purple-50/70 border-purple-200'
-                : request.rejectionInfo?.rejectedRole === 'Sales Team'
-                ? 'bg-rose-50/70 border-rose-200'
-                : 'bg-slate-50 border-slate-200'
-            }`}>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="font-bold text-slate-800">3. Sales Acceptance</span>
-                {request.status === 'Pending Head of Operation' || request.status === 'Approved' ? (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                ) : request.rejectionInfo?.rejectedRole === 'Sales Team' ? (
-                  <XCircle className="w-4 h-4 text-rose-600" />
-                ) : request.status === 'Pending Sales Acceptance' ? (
-                  <span className="text-[10px] text-purple-700 font-medium">Pending</span>
-                ) : (
-                  <span className="text-[10px] text-slate-400 font-medium">Upcoming</span>
-                )}
-              </div>
-              {request.status === 'Pending Head of Operation' || request.status === 'Approved' ? (
-                <div>
-                  <div className="font-medium text-emerald-900">Accepted by Sales Team</div>
-                  <p className="text-[11px] text-emerald-700">Allocation confirmed</p>
-                </div>
-              ) : request.rejectionInfo?.rejectedRole === 'Sales Team' ? (
-                <p className="text-[11px] text-rose-700 italic">Declined: "{request.rejectionInfo.reason}"</p>
-              ) : request.status === 'Pending Sales Acceptance' ? (
-                <p className="text-[11px] text-purple-700 font-medium">Awaiting Sales Team acceptance of allocated devices</p>
-              ) : (
-                <p className="text-[11px] text-slate-400">Awaiting device allocation step</p>
-              )}
-            </div>
-
             {/* Head of Operation Signoff */}
             <div className={`p-3.5 rounded-xl border text-xs ${
               request.headOfOperationApproval
@@ -715,7 +661,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                 : 'bg-slate-50 border-slate-200'
             }`}>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="font-bold text-slate-800">4. Head of Operation</span>
+                <span className="font-bold text-slate-800">3. Head of Operation</span>
                 {request.headOfOperationApproval ? (
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                 ) : request.rejectionInfo?.rejectedRole === 'Head of Operation' ? (
@@ -737,10 +683,10 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
               ) : (
                 <div>
                   <p className="text-[11px] text-slate-500">Awaiting Head of Ops final approval</p>
-                  {request.assignedHeadOfOperation && (
+                  {(request.assignedHeadOfOperation || request.status === 'Pending Sales Acceptance') && (
                     <div className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 font-semibold text-[10px] border border-purple-200 shadow-xs">
                       <span>Assigned Approver:</span>
-                      <span className="font-bold">{request.assignedHeadOfOperation}</span>
+                      <span className="font-bold">{request.assignedHeadOfOperation || (request.totalValueRM > 50000 ? 'NOORA MAT RIFIN' : 'MASILA BT SHAMERE')}</span>
                     </div>
                   )}
                 </div>
@@ -839,68 +785,6 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
             </div>
           )}
 
-          {/* Sales Team Acceptance Decision Controls */}
-          {isSalesTeamMember && isPendingSalesAcceptance && (
-            <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 space-y-3">
-              <h4 className="text-xs font-bold text-purple-900 uppercase tracking-wider flex items-center gap-1.5">
-                <MessageSquare className="w-4 h-4 text-purple-700" />
-                Sales Team Allocation Acceptance & Review
-              </h4>
-
-              {!isRejecting ? (
-                <div className="space-y-2">
-                  <textarea
-                    rows={2}
-                    value={salesComments}
-                    onChange={e => setSalesComments(e.target.value)}
-                    placeholder="Enter optional acceptance comments or feedback on allocated devices..."
-                    className="w-full border border-purple-300 rounded-lg p-2.5 text-xs outline-none focus:ring-2 focus:ring-purple-500 bg-white"
-                  />
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      id="btn-trigger-sales-reject"
-                      onClick={() => setIsRejecting(true)}
-                      className="inline-flex items-center gap-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-300 text-rose-700 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer"
-                    >
-                      <XCircle className="w-4 h-4" /> Decline Allocation
-                    </button>
-                    <button
-                      id="btn-confirm-sales-accept"
-                      onClick={handleConfirmSalesAccept}
-                      className="inline-flex items-center gap-1.5 bg-purple-600 hover:bg-purple-500 text-white px-5 py-2 rounded-xl text-xs font-semibold shadow-md shadow-purple-500/20 cursor-pointer"
-                    >
-                      <CheckCircle2 className="w-4 h-4" /> Accept Allocation & Flow to Head of Operation
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <textarea
-                    rows={2}
-                    value={rejectReason}
-                    onChange={e => setRejectReason(e.target.value)}
-                    placeholder="Provide mandatory reason for declining allocation..."
-                    className="w-full border border-rose-300 rounded-lg p-2.5 text-xs outline-none focus:ring-2 focus:ring-rose-500 bg-white"
-                  />
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      onClick={() => setIsRejecting(false)}
-                      className="px-3.5 py-1.5 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      id="btn-confirm-sales-reject"
-                      onClick={handleConfirmSalesReject}
-                      className="inline-flex items-center gap-1.5 bg-rose-600 text-white px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer"
-                    >
-                      Confirm Decline
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
           {isHeadOfOps && isPendingHoo && (
             <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 space-y-3">
               <h4 className="text-xs font-bold text-indigo-900 uppercase tracking-wider flex items-center gap-1.5">

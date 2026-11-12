@@ -513,7 +513,7 @@ export const DeviceTeamEditModal: React.FC<DeviceTeamEditModalProps> = ({
                   className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-xl text-xs font-semibold shadow-md shadow-blue-500/20 transition-all cursor-pointer"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Approved and Flow to Sales Team Acceptance</span>
+                  <span>Approve &amp; Send to Head of Operation</span>
                 </button>
               </>
             ) : (

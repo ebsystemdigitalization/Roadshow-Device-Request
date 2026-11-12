@@ -65,13 +65,11 @@ export const RequestList: React.FC<RequestListProps> = ({
     if (currentUser.role === 'Head of Department') return r.status !== 'Approved' && r.status !== 'Rejected';
     if (currentUser.role === 'Device Team') return r.status === 'Under Review';
     if (currentUser.role === 'Head of Operation') {
-      if (r.status !== 'Pending Head of Operation') return false;
-      if (r.assignedHeadOfOperation && r.assignedHeadOfOperation.trim().toLowerCase() !== currentUser.name.trim().toLowerCase()) {
-        return false;
-      }
-      return true;
+      if (r.status !== 'Pending Head of Operation' && r.status !== 'Pending Sales Acceptance') return false;
+      const assignedHoo = r.assignedHeadOfOperation || (r.totalValueRM > 50000 ? 'NOORA MAT RIFIN' : 'MASILA BT SHAMERE');
+      return assignedHoo.trim().toLowerCase() === currentUser.name.trim().toLowerCase();
     }
-    if (currentUser.role === 'Sales Team') return (r.status === 'Draft' || r.status === 'Pending Sales Acceptance') && r.createdByUserId === currentUser.id;
+    if (currentUser.role === 'Sales Team') return (r.status === 'Draft' || r.status === 'Rejected') && r.createdByUserId === currentUser.id;
     if (currentUser.role === 'Admin') return r.status !== 'Approved' && r.status !== 'Rejected';
     return false;
   });
@@ -94,7 +92,7 @@ export const RequestList: React.FC<RequestListProps> = ({
     if (currentUser.role === 'Head of Department') return 'from users tagged to your department requiring review or progress';
     if (currentUser.role === 'Device Team') return 'under Device Team review & inventory allocation';
     if (currentUser.role === 'Head of Operation') return 'awaiting your final Head of Operation approval';
-    if (currentUser.role === 'Sales Team') return 'saved in your Drafts or pending your allocation acceptance';
+    if (currentUser.role === 'Sales Team') return 'saved in your Drafts or returned for amendment';
     if (currentUser.role === 'Admin') return 'currently requiring workflow progress or review';
     return 'pending action';
   };
@@ -117,10 +115,12 @@ export const RequestList: React.FC<RequestListProps> = ({
             (currentUser.role === 'Head of Unit' && r.status !== 'Approved' && r.status !== 'Rejected') ||
             (currentUser.role === 'Head of Department' && r.status !== 'Approved' && r.status !== 'Rejected') ||
             (currentUser.role === 'Device Team' && r.status === 'Under Review') ||
-            (currentUser.role === 'Head of Operation' && r.status === 'Pending Head of Operation' && (!r.assignedHeadOfOperation || r.assignedHeadOfOperation.trim().toLowerCase() === currentUser.name.trim().toLowerCase())) ||
-            (currentUser.role === 'Sales Team' && r.createdByUserId === currentUser.id && (r.status === 'Draft' || r.status === 'Pending Sales Acceptance')) ||
+            (currentUser.role === 'Head of Operation' && (r.status === 'Pending Head of Operation' || r.status === 'Pending Sales Acceptance') && (r.assignedHeadOfOperation || (r.totalValueRM > 50000 ? 'NOORA MAT RIFIN' : 'MASILA BT SHAMERE')).trim().toLowerCase() === currentUser.name.trim().toLowerCase()) ||
+            (currentUser.role === 'Sales Team' && r.createdByUserId === currentUser.id && (r.status === 'Draft' || r.status === 'Rejected')) ||
             (currentUser.role === 'Admin' && r.status !== 'Approved' && r.status !== 'Rejected')
           )
+        : statusFilter === 'Pending Head of Operation'
+        ? (r.status === 'Pending Head of Operation' || r.status === 'Pending Sales Acceptance')
         : r.status === statusFilter;
 
     const matchesRegion = regionFilter === 'ALL' || r.partA.region === regionFilter;
@@ -245,8 +245,7 @@ export const RequestList: React.FC<RequestListProps> = ({
               <option value="Draft">Draft</option>
               <option value="Pending Head of Sales">Pending Head of Sales</option>
               <option value="Under Review">Under Review (Device Team)</option>
-              <option value="Pending Sales Acceptance">Pending Sales Acceptance</option>
-              <option value="Pending Head of Operation">Pending Head of Operation</option>
+                            <option value="Pending Head of Operation">Pending Head of Operation</option>
               <option value="Approved">Approved</option>
               <option value="Rejected">Rejected</option>
             </select>
@@ -318,20 +317,12 @@ export const RequestList: React.FC<RequestListProps> = ({
               Device Team ({roleBasedRequests.filter(r => r.status === 'Under Review').length})
             </button>
             <button
-              onClick={() => setStatusFilter('Pending Sales Acceptance')}
-              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer ${
-                statusFilter === 'Pending Sales Acceptance' ? 'bg-purple-600 text-white' : 'bg-purple-50 text-purple-800 hover:bg-purple-100'
-              }`}
-            >
-              Sales Acceptance ({roleBasedRequests.filter(r => r.status === 'Pending Sales Acceptance').length})
-            </button>
-            <button
               onClick={() => setStatusFilter('Pending Head of Operation')}
               className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer ${
                 statusFilter === 'Pending Head of Operation' ? 'bg-indigo-600 text-white' : 'bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
               }`}
             >
-              Head of Ops ({roleBasedRequests.filter(r => r.status === 'Pending Head of Operation').length})
+              Head of Ops ({roleBasedRequests.filter(r => r.status === 'Pending Head of Operation' || r.status === 'Pending Sales Acceptance').length})
             </button>
             <button
               onClick={() => setStatusFilter('Approved')}
@@ -381,7 +372,7 @@ export const RequestList: React.FC<RequestListProps> = ({
           )}
         </div>
       ) : (
-        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-x-auto max-w-full">
           <table className="w-full text-left text-xs border-collapse">
             <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
               <tr>
@@ -467,10 +458,38 @@ export const RequestList: React.FC<RequestListProps> = ({
                     {/* Status */}
                     <td className="p-3.5">
                       <div className="flex flex-col items-start gap-1">
-                        <StatusBadge status={req.status} />
-                        {req.status === 'Pending Head of Operation' && req.assignedHeadOfOperation && (
-                          <span className="text-[10px] font-semibold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
-                            Assigned: {req.assignedHeadOfOperation}
+                        <StatusBadge status={req.status === 'Pending Sales Acceptance' ? 'Pending Head of Operation' : req.status} />
+                        {req.status === 'Pending Head of Sales' && (() => {
+                          const assignedHeadOfSales = users
+                            .find(user => user.id === req.createdByUserId)
+                            ?.headOfSales?.trim();
+
+                          return assignedHeadOfSales ? (
+                            <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                              Assigned: {assignedHeadOfSales}
+                            </span>
+                          ) : null;
+                        })()}
+                        {req.status === 'Under Review' && (
+                          <span className="text-[10px] font-semibold text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                            Waiting for Device Team
+                          </span>
+                        )}
+                        {(req.status === 'Pending Head of Operation' || req.status === 'Pending Sales Acceptance') && (
+                          <>
+                            {req.deviceTeamApproval?.approvedBy && (
+                              <span className="text-[10px] font-semibold text-blue-800 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                                Device Team: {req.deviceTeamApproval.approvedBy}
+                              </span>
+                            )}
+                            <span className="text-[10px] font-semibold text-purple-800 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
+                              Assigned: {req.assignedHeadOfOperation || (req.totalValueRM > 50000 ? 'NOORA MAT RIFIN' : 'MASILA BT SHAMERE')}
+                            </span>
+                          </>
+                        )}
+                        {req.status === 'Approved' && req.headOfOperationApproval?.approvedBy && (
+                          <span className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                            Approved by: {req.headOfOperationApproval.approvedBy}
                           </span>
                         )}
                       </div>

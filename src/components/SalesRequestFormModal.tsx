@@ -70,6 +70,13 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
 
   const [validationError, setValidationError] = useState<string | null>(null);
 
+  const isResubmittingAfterHeadOfSalesDecision = Boolean(editingRequest?.headOfSalesApproval) ||
+    editingRequest?.rejectionInfo?.rejectedRole === 'Head of Sales' ||
+    (editingRequest?.history || []).some(log =>
+      log.actorRole === 'Head of Sales' &&
+      (log.action === 'Approved Request' || log.action === 'Rejected Request')
+    );
+
   // Auto update region when state changes if needed
   const handleStateChange = (selectedState: string) => {
     let region = 'Central';
@@ -213,7 +220,12 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
     const now = new Date().toISOString();
     const totalValue = calculateTotalRrpSum();
 
+    const nextStatus = isSubmitAction
+      ? (isResubmittingAfterHeadOfSalesDecision ? 'Under Review' : 'Pending Head of Sales')
+      : 'Draft';
+
     const requestToSave: RoadshowRequest = {
+      ...(editingRequest || {} as RoadshowRequest),
       id: editingRequest ? editingRequest.id : generateId(),
       requestCode: editingRequest ? editingRequest.requestCode : generateRequestCode(existingRequests),
       createdByUserId: editingRequest ? editingRequest.createdByUserId : currentUser.id,
@@ -221,10 +233,11 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
       createdByEmail: editingRequest ? editingRequest.createdByEmail : currentUser.email,
       createdAt: editingRequest ? editingRequest.createdAt : now,
       updatedAt: now,
-      status: isSubmitAction ? 'Pending Head of Sales' : 'Draft',
+      status: nextStatus,
       partA,
       partB,
       totalValueRM: totalValue,
+      rejectionInfo: isSubmitAction ? undefined : editingRequest?.rejectionInfo,
       history: [
         ...(editingRequest ? editingRequest.history : []),
         {
@@ -233,10 +246,12 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
           actorName: currentUser.name,
           actorRole: currentUser.role,
           action: isSubmitAction
-            ? (editingRequest ? 'Resubmitted Request to Head of Sales' : 'Submitted Request to Head of Sales')
+            ? isResubmittingAfterHeadOfSalesDecision
+              ? 'Resubmitted Request to Device Team'
+              : (editingRequest ? 'Resubmitted Request to Head of Sales' : 'Submitted Request to Head of Sales')
             : (editingRequest ? 'Updated Request Draft' : 'Created Request Draft'),
           previousStatus: editingRequest ? editingRequest.status : undefined,
-          newStatus: isSubmitAction ? 'Pending Head of Sales' : 'Draft'
+          newStatus: nextStatus
         }
       ]
     };
@@ -629,7 +644,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
               className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2 rounded-xl text-xs font-semibold shadow-md shadow-emerald-500/20 transition-all cursor-pointer"
             >
               <Send className="w-4 h-4" />
-              <span>Submit to Head of Sales</span>
+              <span>{isResubmittingAfterHeadOfSalesDecision ? 'Resubmit to Device Team' : 'Submit to Head of Sales'}</span>
             </button>
           </div>
         </div>

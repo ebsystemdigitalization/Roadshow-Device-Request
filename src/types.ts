@@ -11,7 +11,7 @@ export type RequestStatus =
   | 'Draft'
   | 'Pending Head of Sales'
   | 'Under Review' // Device Team stage
-  | 'Pending Sales Acceptance'
+  | 'Pending Sales Acceptance' // Legacy status retained for existing Firestore requests
   | 'Pending Head of Operation'
   | 'Approved'
   | 'Rejected';
