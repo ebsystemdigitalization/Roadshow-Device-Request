@@ -1075,7 +1075,9 @@ export default function App() {
         {activeTab === 'analytics' && (
           <DashboardAnalytics
             currentUser={currentUser}
+            users={users}
             deviceInventory={deviceInventory}
+            imeiInventory={imeiInventory}
             requests={
               currentUser.role === 'Sales Team'
                 ? requests.filter(r => r.createdByUserId === currentUser.id)

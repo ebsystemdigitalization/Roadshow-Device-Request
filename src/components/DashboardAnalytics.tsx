@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { RoadshowRequest, DeviceInventoryItem, User } from '../types';
+import { RoadshowRequest, DeviceInventoryItem, ImeiInventoryItem, User } from '../types';
+import * as XLSX from 'xlsx';
 import { formatRM, formatDate, inferBrandFromDescription, getRegionFromState } from '../utils/formatters';
 import { StatusBadge } from './StatusBadge';
 import { 
@@ -27,12 +28,16 @@ import {
   Calendar,
   Eye,
   CheckSquare,
-  RotateCcw
+  RotateCcw,
+  FileSpreadsheet,
+  ChevronDown
 } from 'lucide-react';
 
 interface DashboardAnalyticsProps {
   requests: RoadshowRequest[];
   deviceInventory?: DeviceInventoryItem[];
+  imeiInventory?: ImeiInventoryItem[];
+  users?: User[];
   currentUser?: User;
 }
 
@@ -137,6 +142,8 @@ function getBrandTheme(brandName: string) {
 export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({ 
   requests, 
   deviceInventory = [],
+  imeiInventory = [],
+  users = [],
   currentUser
 }) => {
   const [roadshowSearch, setRoadshowSearch] = useState('');
@@ -148,6 +155,9 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
   const [brandSearch, setBrandSearch] = useState('');
   const [brandFilterMode, setBrandFilterMode] = useState<'ALL' | 'APPROVED'>('APPROVED');
   const [selectedRegion, setSelectedRegion] = useState<string>('ALL');
+  const [exportAllRequests, setExportAllRequests] = useState(true);
+  const [selectedExportMonths, setSelectedExportMonths] = useState<string[]>([]);
+  const [exportMonthMenuOpen, setExportMonthMenuOpen] = useState(false);
 
   // Check if current user role is allowed to use the Select Region filter
   const isRegionFilterAllowed = currentUser 
@@ -161,6 +171,138 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
         return reqRegion.toLowerCase() === selectedRegion.toLowerCase();
       })
     : requests;
+
+  const isDeviceTeam = currentUser?.role === 'Device Team';
+  const exportMonthOptions = Array.from(new Set(
+    activeRequests
+      .map(request => request.partA?.startDate?.slice(0, 7))
+      .filter((month): month is string => Boolean(month && /^\d{4}-\d{2}$/.test(month)))
+  )).sort((a, b) => b.localeCompare(a));
+
+  const toggleExportMonth = (month: string) => {
+    setExportAllRequests(false);
+    setSelectedExportMonths(current => current.includes(month)
+      ? current.filter(value => value !== month)
+      : [...current, month]);
+  };
+
+  const toExcelDateSerial = (value?: string): number | string => {
+    if (!value) return '';
+    const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    let year: number;
+    let month: number;
+    let day: number;
+
+    if (isoMatch) {
+      year = Number(isoMatch[1]);
+      month = Number(isoMatch[2]);
+      day = Number(isoMatch[3]);
+    } else {
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) return '';
+      year = parsed.getFullYear();
+      month = parsed.getMonth() + 1;
+      day = parsed.getDate();
+    }
+
+    // Excel date serial, with no time component; the cell format below displays DD/MM/YYYY.
+    return Math.floor(Date.UTC(year, month - 1, day) / 86400000) + 25569;
+  };
+
+  const exportReport = () => {
+    if (!isDeviceTeam) return;
+
+    const selectedRequests = exportAllRequests
+      ? activeRequests
+      : activeRequests.filter(request => selectedExportMonths.includes(request.partA?.startDate?.slice(0, 7) || ''));
+
+    const exportLines = selectedRequests.flatMap(request => {
+      const devices = (request.partB || []).filter(device => device.status !== 'Rejected');
+      return devices.map(device => {
+        const matchingImeis = imeiInventory
+          .filter(item =>
+            (item.requestId === request.id || item.requestCode === request.requestCode) &&
+            item.material?.trim().toLowerCase() === device.material?.trim().toLowerCase() &&
+            item.imei?.trim()
+          )
+          .map(item => item.imei?.trim() || '')
+          .filter(Boolean);
+        if (device.imei?.trim()) matchingImeis.push(...device.imei.split(/[\s,;]+/).filter(Boolean));
+
+        return {
+          request,
+          device,
+          imeis: Array.from(new Set(matchingImeis))
+        };
+      });
+    });
+
+    if (exportLines.length === 0) {
+      window.alert('There are no device lines to export for the selected period.');
+      return;
+    }
+
+    const headers = [
+      'Start Date',
+      'End Date',
+      'Event Code',
+      'Event Name',
+      'IMEI',
+      'Material Code',
+      'Description',
+      'RRP',
+      'DMS STO ID',
+      'Requestor',
+      "Requestor's Region"
+    ];
+
+    const rows = exportLines.flatMap(({ request, device, imeis }) => {
+      const imeiRows = imeis.length > 0 ? imeis : [''];
+
+      return imeiRows.map(imei => ({
+        'Start Date': toExcelDateSerial(request.partA?.startDate),
+        'End Date': toExcelDateSerial(request.partA?.endDate),
+        'Event Code': request.requestCode || '',
+        'Event Name': request.partA?.eventName || '',
+        'IMEI': imei,
+        'Material Code': device.material || '',
+        'Description': device.description || '',
+        'RRP': device.rrpRM || 0,
+        'DMS STO ID': '',
+        'Requestor': request.partA?.requestor || request.createdByName || '',
+        "Requestor's Region": users.find(user => user.id === request.createdByUserId)?.region || ''
+      }));
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+    // Store dates as Excel date serials and apply a readable date format.
+    for (let rowIndex = 2; rowIndex <= rows.length + 1; rowIndex += 1) {
+      for (const column of ['A', 'B']) {
+        const cell = worksheet[`${column}${rowIndex}`];
+        if (cell && typeof cell.v === 'number') cell.z = 'dd/mm/yyyy';
+      }
+    }
+    worksheet['!cols'] = headers.map(header => {
+      if (header === 'Start Date' || header === 'End Date') return { wch: 14 };
+      if (header === 'IMEI') return { wch: 22 };
+      if (header === 'Event Name' || header === 'Description') return { wch: 34 };
+      if (header === 'Requestor') return { wch: 30 };
+      if (header === "Requestor's Region") return { wch: 22 };
+      return { wch: 18 };
+    });
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'DMS STO Report');
+    const filenamePeriod = exportAllRequests
+      ? `ALL_${String(new Date().getFullYear()).slice(-2)}`
+      : [...selectedExportMonths].sort().map(month => {
+          const [year, monthNumber] = month.split('-').map(Number);
+          const monthLabel = new Intl.DateTimeFormat('en-MY', { month: 'short', timeZone: 'UTC' })
+            .format(new Date(Date.UTC(year, monthNumber - 1, 1)));
+          return `${monthLabel}${String(year).slice(-2)}`;
+        }).join('_');
+    XLSX.writeFile(workbook, `RDR_Report_${filenamePeriod}.xlsx`);
+  };
 
   // Helper to get total requested value for a single request (including all requested and rejected devices)
   const getRequestedValueForRequest = (r: RoadshowRequest): number => {
@@ -521,9 +663,10 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
           </p>
         </div>
 
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 self-start md:self-auto">
         {/* Select Region Dropdown (Available for Head of Department, Admin, Device Team, and Head of Operation) */}
         {isRegionFilterAllowed && (
-          <div className="flex items-center gap-3 self-start md:self-auto bg-slate-50 p-2 sm:p-2.5 rounded-xl border border-slate-200">
+          <div className="flex items-center gap-3 bg-slate-50 p-2 sm:p-2.5 rounded-xl border border-slate-200">
             <label htmlFor="select-region-dropdown" className="text-xs font-bold text-slate-700 whitespace-nowrap flex items-center gap-1.5 pl-1">
               <MapPin className="w-4 h-4 text-blue-600 shrink-0" />
               <span>Select Region:</span>
@@ -558,6 +701,64 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
             )}
           </div>
         )}
+
+        {isDeviceTeam && (
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setExportMonthMenuOpen(open => !open)}
+                aria-expanded={exportMonthMenuOpen}
+                className="inline-flex items-center gap-2 px-3 py-2.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 shadow-sm"
+              >
+                <Calendar className="w-4 h-4 text-blue-600" />
+                <span>{exportAllRequests ? 'All requests' : selectedExportMonths.length ? `${selectedExportMonths.length} month${selectedExportMonths.length === 1 ? '' : 's'}` : 'Choose month'}</span>
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+              {exportMonthMenuOpen && (
+                <div className="absolute right-0 top-full z-30 mt-2 w-64 max-h-80 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3 shadow-xl">
+                  <label className="flex cursor-pointer items-center gap-2 border-b border-slate-100 pb-2.5 text-xs font-semibold text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={exportAllRequests}
+                      onChange={event => {
+                        setExportAllRequests(event.target.checked);
+                        if (event.target.checked) setSelectedExportMonths([]);
+                      }}
+                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    All roadshow requests
+                  </label>
+                  <div className="pt-2">
+                    {exportMonthOptions.length === 0 ? (
+                      <p className="py-2 text-xs text-slate-500">No event start dates available.</p>
+                    ) : exportMonthOptions.map(month => (
+                      <label key={month} className="flex cursor-pointer items-center gap-2 rounded-lg px-1 py-2 text-xs text-slate-700 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={!exportAllRequests && selectedExportMonths.includes(month)}
+                          onChange={() => toggleExportMonth(month)}
+                          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        {new Intl.DateTimeFormat('en-MY', { month: 'long', year: 'numeric' }).format(new Date(`${month}-01T00:00:00`))}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={exportReport}
+              disabled={!exportAllRequests && selectedExportMonths.length === 0}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              Export Report
+            </button>
+          </div>
+        )}
+        </div>
       </div>
       {/* Top Banner KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
