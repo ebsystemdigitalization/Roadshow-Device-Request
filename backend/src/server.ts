@@ -22,6 +22,73 @@ const requestsCollection = db.collection('requests');
 const usersCollection = db.collection('users');
 const deviceInventoryCollection = db.collection('device_inventory');
 const imeiInventoryCollection = db.collection('imei_inventory');
+const requestCountersCollection = db.collection('request_counters');
+const requestCodeRegistryCollection = db.collection('request_code_registry');
+
+/**
+ * Allocate a request code centrally so concurrent users cannot receive the same code.
+ * A Firestore transaction serializes sequence updates and checks legacy requests
+ * that may not yet have a registry record.
+ */
+async function allocateRequestCode(): Promise<string> {
+  const now = new Date();
+  const year = Number(
+    new Intl.DateTimeFormat('en', {
+      year: 'numeric',
+      timeZone: 'Asia/Kuala_Lumpur'
+    }).format(now)
+  );
+  const prefix = `RDR-${year}-`;
+  const counterRef = requestCountersCollection.doc(String(year));
+  const updatedAt = now.toISOString();
+
+  return db.runTransaction(async transaction => {
+    const counterSnapshot = await transaction.get(counterRef);
+    let lastSequence = Number(counterSnapshot.data()?.lastSequence || 0);
+
+    if (!counterSnapshot.exists) {
+      const latestRequestQuery = requestsCollection
+        .where('requestCode', '>=', prefix)
+        .where('requestCode', '<', `${prefix}\uf8ff`)
+        .orderBy('requestCode', 'desc')
+        .limit(1);
+      const latestRequestSnapshot = await transaction.get(latestRequestQuery);
+      const latestCode = String(latestRequestSnapshot.docs[0]?.data()?.requestCode || '');
+      const latestMatch = latestCode.match(new RegExp(`^RDR-${year}-(\\d+)$`, 'i'));
+      if (latestMatch) lastSequence = Number(latestMatch[1]) || 0;
+    }
+
+    let sequence = lastSequence + 1;
+    let requestCode = '';
+    let registryRef = requestCodeRegistryCollection.doc();
+
+    while (true) {
+      requestCode = `${prefix}${String(sequence).padStart(4, '0')}`;
+      registryRef = requestCodeRegistryCollection.doc(requestCode);
+
+      const registrySnapshot = await transaction.get(registryRef);
+      const existingRequestSnapshot = await transaction.get(
+        requestsCollection.where('requestCode', '==', requestCode).limit(1)
+      );
+
+      if (!registrySnapshot.exists && existingRequestSnapshot.empty) break;
+      sequence += 1;
+    }
+
+    transaction.create(registryRef, {
+      requestCode,
+      year,
+      createdAt: updatedAt
+    });
+    transaction.set(counterRef, {
+      year,
+      lastSequence: sequence,
+      updatedAt
+    });
+
+    return requestCode;
+  });
+}
 
 interface UserProfile {
   name?: string;
@@ -530,6 +597,7 @@ app.post(
       }
 
       const now = new Date().toISOString();
+      const requestCode = await allocateRequestCode();
 
       /*
        * The frontend is not allowed to decide
@@ -537,6 +605,7 @@ app.post(
        */
       const {
         id: _ignoredId,
+        requestCode: _ignoredRequestCode,
         createdByUserId:
           _ignoredCreatorId,
         createdByName:
@@ -553,6 +622,7 @@ app.post(
 
       const newRequest = {
         ...submittedData,
+        requestCode,
         createdByUserId: uid,
         createdByName:
           profile.name ||

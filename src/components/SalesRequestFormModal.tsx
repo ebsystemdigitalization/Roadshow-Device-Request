@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { RoadshowRequest, PartARoadshowInfo, PartBDeviceItem, User, DeviceInventoryItem, MALAYSIAN_STATES, MALAYSIAN_REGIONS } from '../types';
-import { generateId, generateRequestCode, formatRM } from '../utils/formatters';
+import { generateId, formatRM } from '../utils/formatters';
 import { X, Plus, Trash2, Save, Send, Smartphone, Calendar, MapPin, Building, Target, Users, AlertCircle, Sparkles, Search, UserCheck } from 'lucide-react';
 
 interface SalesRequestFormModalProps {
@@ -18,7 +18,6 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
   onClose,
   currentUser,
   editingRequest,
-  existingRequests = [],
   onSaveRequest,
   deviceInventory = []
 }) => {
@@ -227,7 +226,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
     const requestToSave: RoadshowRequest = {
       ...(editingRequest || {} as RoadshowRequest),
       id: editingRequest ? editingRequest.id : generateId(),
-      requestCode: editingRequest ? editingRequest.requestCode : generateRequestCode(existingRequests),
+      requestCode: editingRequest ? editingRequest.requestCode : '',
       createdByUserId: editingRequest ? editingRequest.createdByUserId : currentUser.id,
       createdByName: editingRequest ? editingRequest.createdByName : currentUser.name,
       createdByEmail: editingRequest ? editingRequest.createdByEmail : currentUser.email,
