@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Bell, BellRing } from 'lucide-react';
 import { RoadshowRequest, User, UserRole, PartBDeviceItem, DeviceInventoryItem, ImeiInventoryItem } from './types';
 import { INITIAL_USERS } from './data/seedData';
 import { Navbar } from './components/Navbar';
@@ -16,6 +17,7 @@ import { ImeiDetailRecord } from './components/ImeiDetailModal';
 import { generateId, isRequestForHeadOfSales, isRequestForHeadOfUnit, isRequestForHeadOfDepartment } from './utils/formatters';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './lib/firebase';
+import { listenForForegroundPush, registerPushNotifications, removePushNotifications } from './services/pushNotifications';
 import {
   createRequest,
   deleteRequest,
@@ -57,6 +59,8 @@ export default function App() {
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [pushStatus, setPushStatus] = useState<'idle' | 'loading' | 'enabled' | 'denied' | 'unsupported' | 'error'>('idle');
+  const [pushMessage, setPushMessage] = useState('');
 
   const [currentUser, setCurrentUser] = useState<User>(() => {
     const savedId = localStorage.getItem('rdr_current_user_id');
@@ -151,6 +155,71 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  // Sync an existing push permission after sign-in and show notifications while RDR is open.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setPushStatus('idle');
+      setPushMessage('');
+      return;
+    }
+
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+      setPushStatus('unsupported');
+      return;
+    }
+
+    let cancelled = false;
+    let stopForegroundListener: () => void = () => undefined;
+
+    if (Notification.permission === 'denied') {
+      setPushStatus('denied');
+    } else if (Notification.permission === 'granted') {
+      setPushStatus('loading');
+      void registerPushNotifications()
+        .then(() => {
+          if (!cancelled) {
+            setPushStatus('enabled');
+            setPushMessage('Notifications are enabled on this device.');
+          }
+        })
+        .catch(error => {
+          console.error('Unable to sync RDR push notification registration:', error);
+          if (!cancelled) {
+            setPushStatus('error');
+            setPushMessage(error instanceof Error ? error.message : 'Unable to set up notifications.');
+          }
+        });
+    } else {
+      setPushStatus('idle');
+    }
+
+    void listenForForegroundPush(payload => {
+      if (Notification.permission !== 'granted') return;
+      const data = payload.data || {};
+      const title = data.title || payload.notification?.title || 'Roadshow Device Request';
+      const body = data.body || payload.notification?.body || 'There is an update waiting for you in RDR.';
+      void navigator.serviceWorker.ready.then(registration =>
+        registration.showNotification(title, {
+          body,
+          icon: '/icons/rdr-192.png',
+          badge: '/icons/rdr-180.png',
+          data: { url: data.url || '/' },
+          tag: data.requestId || 'rdr-update'
+        })
+      );
+    })
+      .then(stop => {
+        if (cancelled) stop();
+        else stopForegroundListener = stop;
+      })
+      .catch(error => console.error('Unable to listen for foreground RDR notifications:', error));
+
+    return () => {
+      cancelled = true;
+      stopForegroundListener();
+    };
+  }, [isAuthenticated]);
+
   // Load the user directory and requests after authentication succeeds.
   useEffect(() => {
     if (!isAuthenticated) {
@@ -231,7 +300,49 @@ export default function App() {
     setIsAuthenticated(true);
   };
 
+  const handleEnablePushNotifications = async () => {
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+      setPushStatus('unsupported');
+      setPushMessage('Push notifications are not supported in this browser.');
+      return;
+    }
+
+    if (Notification.permission === 'denied') {
+      setPushStatus('denied');
+      setPushMessage('Notifications are blocked. Allow them in your browser or device settings.');
+      return;
+    }
+
+    setPushStatus('loading');
+    setPushMessage('');
+    try {
+      // Request permission directly from this button click, as required by mobile browsers.
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setPushStatus(permission === 'denied' ? 'denied' : 'idle');
+        setPushMessage(permission === 'denied'
+          ? 'Notifications are blocked. Allow them in your browser or device settings.'
+          : 'Allow notifications to receive RDR updates.');
+        return;
+      }
+
+      await registerPushNotifications();
+      setPushStatus('enabled');
+      setPushMessage('Notifications are enabled on this device.');
+    } catch (error) {
+      console.error('Unable to enable RDR push notifications:', error);
+      setPushStatus('error');
+      setPushMessage(error instanceof Error ? error.message : 'Unable to enable notifications.');
+    }
+  };
+
   const handleLogout = async () => {
+    try {
+      await removePushNotifications();
+    } catch (error) {
+      console.error('Unable to remove this device notification subscription:', error);
+    }
+
     try {
       await signOut(auth);
     } catch (error) {
@@ -1051,6 +1162,31 @@ export default function App() {
         } : undefined}
         onOpenInventoryModal={() => setIsInventoryModalOpen(true)}
       />
+
+      {pushStatus !== 'unsupported' && (
+        <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-3 flex flex-wrap items-center justify-end gap-2">
+          {pushStatus === 'enabled' ? (
+            <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 border border-emerald-200">
+              <BellRing className="w-4 h-4" /> Notifications enabled
+            </span>
+          ) : pushStatus === 'denied' ? (
+            <span className="text-xs text-amber-800">Allow notifications in your browser or device settings.</span>
+          ) : (
+            <button
+              type="button"
+              onClick={handleEnablePushNotifications}
+              disabled={pushStatus === 'loading'}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+            >
+              <Bell className="w-4 h-4" />
+              {pushStatus === 'loading' ? 'Setting up notifications…' : 'Enable notifications'}
+            </button>
+          )}
+          {pushMessage && pushStatus !== 'enabled' && (
+            <span role="status" className="w-full text-right text-xs text-slate-600">{pushMessage}</span>
+          )}
+        </div>
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">

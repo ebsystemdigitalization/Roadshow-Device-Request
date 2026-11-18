@@ -4,6 +4,8 @@ import express, {
 } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { createHash } from 'node:crypto';
+import { getMessaging } from 'firebase-admin/messaging';
 
 import { db } from './firebase.js';
 import { requireAuth } from './middleware/auth.js';
@@ -24,6 +26,7 @@ const deviceInventoryCollection = db.collection('device_inventory');
 const imeiInventoryCollection = db.collection('imei_inventory');
 const requestCountersCollection = db.collection('request_counters');
 const requestCodeRegistryCollection = db.collection('request_code_registry');
+const pushSubscriptionsCollection = db.collection('push_subscriptions');
 
 /**
  * Allocate a request code centrally so concurrent users cannot receive the same code.
@@ -161,6 +164,190 @@ function isUserActive(profile: UserProfile): boolean {
     'Active';
 
   return status !== 'Inactive';
+}
+
+function normalizedComparisonValue(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value).trim().toLowerCase()
+    : '';
+}
+
+function pushTokenDocumentId(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+interface PushNotificationPlan {
+  recipientUids: string[];
+  title: string;
+  body: string;
+}
+
+async function getActiveUsersByRole(
+  role: string
+): Promise<Array<{ uid: string; profile: UserProfile }>> {
+  const snapshot = await usersCollection.where('role', '==', role).get();
+  return snapshot.docs
+    .map(document => ({
+      uid: document.id,
+      profile: document.data() as UserProfile
+    }))
+    .filter(item => isUserActive(item.profile));
+}
+
+async function resolvePushNotificationPlan(
+  requestData: Record<string, unknown>,
+  nextStatus: string,
+  actorRole: string
+): Promise<PushNotificationPlan | null> {
+  // Auth UIDs are case-sensitive; keep their original value for Firestore lookups.
+  const requestorUid = typeof requestData.createdByUserId === 'string'
+    ? requestData.createdByUserId.trim()
+    : '';
+  const requestCode = typeof requestData.requestCode === 'string' && requestData.requestCode.trim()
+    ? requestData.requestCode.trim()
+    : 'A roadshow request';
+  const partA = isRequestBodyValid(requestData.partA) ? requestData.partA : {};
+  const eventRegion = normalizedComparisonValue(partA.region);
+
+  if (nextStatus === 'Pending Head of Sales' && actorRole === 'Sales Team') {
+    const headOfSalesUsers = await getActiveUsersByRole('Head of Sales');
+    const creatorProfile = requestorUid ? await getUserProfile(requestorUid) : null;
+    let recipients: string[] = [];
+
+    if (creatorProfile) {
+      const assignedHeadOfSales = normalizedComparisonValue(creatorProfile.headOfSales);
+      recipients = headOfSalesUsers
+        .filter(user =>
+          assignedHeadOfSales &&
+          (assignedHeadOfSales === normalizedComparisonValue(user.profile.name) ||
+            assignedHeadOfSales === normalizedComparisonValue(user.uid))
+        )
+        .map(user => user.uid);
+    } else {
+      recipients = headOfSalesUsers
+        .filter(user => {
+          const region = normalizedComparisonValue(user.profile.region);
+          return !region || region === 'all' || region === eventRegion;
+        })
+        .map(user => user.uid);
+    }
+
+    return {
+      recipientUids: recipients,
+      title: 'Roadshow request awaiting your review',
+      body: `${requestCode} is waiting for your review.`
+    };
+  }
+
+  if (
+    nextStatus === 'Under Review' &&
+    (actorRole === 'Head of Sales' || actorRole === 'Sales Team')
+  ) {
+    const deviceTeamUsers = await getActiveUsersByRole('Device Team');
+    return {
+      recipientUids: deviceTeamUsers.map(user => user.uid),
+      title: 'Roadshow request waiting for Device Team',
+      body: `${requestCode} is ready for device review.`
+    };
+  }
+
+  if (nextStatus === 'Pending Head of Operation' && actorRole === 'Device Team') {
+    const headOfOperationUsers = await getActiveUsersByRole('Head of Operation');
+    const assignedName = normalizedComparisonValue(requestData.assignedHeadOfOperation) ||
+      (Number(requestData.totalValueRM || 0) > 50000 ? 'noora mat rifin' : 'masila bt shamere');
+    return {
+      recipientUids: headOfOperationUsers
+        .filter(user => normalizedComparisonValue(user.profile.name) === assignedName)
+        .map(user => user.uid),
+      title: 'Roadshow request awaiting final approval',
+      body: `${requestCode} is waiting for your final review.`
+    };
+  }
+
+  if (
+    nextStatus === 'Rejected' &&
+    ['Head of Sales', 'Device Team', 'Head of Operation'].includes(actorRole) &&
+    requestorUid
+  ) {
+    return {
+      recipientUids: [requestorUid],
+      title: 'Roadshow request update',
+      body: `${requestCode} was rejected. Open RDR to view the details.`
+    };
+  }
+
+  if (nextStatus === 'Approved' && actorRole === 'Head of Operation' && requestorUid) {
+    return {
+      recipientUids: [requestorUid],
+      title: 'Roadshow request approved',
+      body: `${requestCode} has received final approval.`
+    };
+  }
+
+  return null;
+}
+
+async function sendRequestStatusNotification(
+  requestId: string,
+  requestData: Record<string, unknown>,
+  previousStatus: string,
+  actorRole: string
+): Promise<void> {
+  const nextStatus = typeof requestData.status === 'string' ? requestData.status.trim() : '';
+  if (!nextStatus || normalizedComparisonValue(nextStatus) === normalizedComparisonValue(previousStatus)) return;
+
+  const plan = await resolvePushNotificationPlan(requestData, nextStatus, actorRole);
+  if (!plan || plan.recipientUids.length === 0) return;
+
+  const uniqueUids = [...new Set(plan.recipientUids)];
+  const subscriptionSnapshots = await Promise.all(
+    uniqueUids.map(uid => pushSubscriptionsCollection.where('uid', '==', uid).get())
+  );
+  const subscriptions = subscriptionSnapshots.flatMap(snapshot => snapshot.docs);
+  const uniqueSubscriptions = new Map<string, (typeof subscriptions)[number]>();
+  for (const document of subscriptions) {
+    const token = document.get('token');
+    if (typeof token === 'string' && token.trim()) uniqueSubscriptions.set(token, document);
+  }
+
+  const tokenEntries = [...uniqueSubscriptions.entries()];
+  if (tokenEntries.length === 0) return;
+
+  const appUrl = (process.env.RDR_PUBLIC_URL || 'https://roadshow-device-request-26.web.app')
+    .replace(/\/+$/, '');
+  const messageData = {
+    title: plan.title,
+    body: plan.body,
+    requestId,
+    url: `${appUrl}/`
+  };
+
+  for (let index = 0; index < tokenEntries.length; index += 500) {
+    const chunk = tokenEntries.slice(index, index + 500);
+    const result = await getMessaging().sendEachForMulticast({
+      tokens: chunk.map(([token]) => token),
+      data: messageData,
+      webpush: {
+        headers: { Urgency: 'high' }
+      }
+    });
+
+    const invalidTokenDeletes: Promise<unknown>[] = [];
+    result.responses.forEach((item, responseIndex) => {
+      if (item.success) return;
+      const code = item.error?.code || '';
+      if (
+        code === 'messaging/registration-token-not-registered' ||
+        code === 'messaging/invalid-registration-token'
+      ) {
+        const [token] = chunk[responseIndex];
+        invalidTokenDeletes.push(
+          pushSubscriptionsCollection.doc(pushTokenDocumentId(token)).delete()
+        );
+      }
+    });
+    if (invalidTokenDeletes.length > 0) await Promise.all(invalidTokenDeletes);
+  }
 }
 
 function canUpdateRequest(
@@ -443,6 +630,72 @@ app.get(
   }
 );
 
+/*
+ * Register or remove a web push subscription for the authenticated user.
+ * FCM tokens are stored server-side and are never accepted with a client-supplied UID.
+ */
+app.post(
+  '/api/push-subscriptions',
+  requireAuth,
+  async (request: Request, response: Response) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({ message: 'An active RDR user profile is required.' });
+        return;
+      }
+
+      const token = typeof request.body?.token === 'string'
+        ? request.body.token.trim()
+        : '';
+      if (token.length < 20 || token.length > 4096) {
+        response.status(400).json({ message: 'A valid push token is required.' });
+        return;
+      }
+
+      await pushSubscriptionsCollection.doc(pushTokenDocumentId(token)).set({
+        uid,
+        token,
+        updatedAt: new Date().toISOString()
+      });
+
+      response.status(200).json({ message: 'This device is registered for RDR notifications.' });
+    } catch (error) {
+      console.error('Unable to register RDR push subscription:', error);
+      response.status(500).json({ message: 'Unable to enable RDR notifications on this device.' });
+    }
+  }
+);
+
+app.delete(
+  '/api/push-subscriptions',
+  requireAuth,
+  async (request: Request, response: Response) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const token = typeof request.body?.token === 'string'
+        ? request.body.token.trim()
+        : '';
+      if (!token) {
+        response.status(400).json({ message: 'A push token is required.' });
+        return;
+      }
+
+      const subscriptionRef = pushSubscriptionsCollection.doc(pushTokenDocumentId(token));
+      const subscription = await subscriptionRef.get();
+      if (subscription.exists && subscription.get('uid') === uid) {
+        await subscriptionRef.delete();
+      }
+
+      response.status(200).json({ message: 'This device was removed from RDR notifications.' });
+    } catch (error) {
+      console.error('Unable to remove RDR push subscription:', error);
+      response.status(500).json({ message: 'Unable to remove this device from RDR notifications.' });
+    }
+  }
+);
+
 // User directory and administrator onboarding endpoints.
 app.use('/api/users', userRoutes);
 
@@ -633,6 +886,12 @@ app.post(
       };
 
       await requestDocument.set(newRequest);
+      await sendRequestStatusNotification(
+        requestDocument.id,
+        newRequest,
+        '',
+        profile.role || ''
+      ).catch(error => console.error('RDR push notification could not be sent:', error));
 
       response.status(201).json({
         request: {
@@ -786,6 +1045,12 @@ app.put(
       await requestDocument.set(
         updatedRequest
       );
+      await sendRequestStatusNotification(
+        requestDocument.id,
+        updatedRequest,
+        String(existingData.status || ''),
+        profile.role || ''
+      ).catch(error => console.error('RDR push notification could not be sent:', error));
 
       response.status(200).json({
         request: {
