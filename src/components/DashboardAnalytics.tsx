@@ -365,10 +365,10 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
     return acc + getRequestedDeviceCountForRequest(r);
   }, 0);
 
-  // Region breakdown for main summary - only populate approved value
+  // Region breakdown follows the requestor's assigned region, matching the export report.
   const regionMap: Record<string, { count: number; approvedCount: number; approvedValue: number; value: number }> = {};
   activeRequests.forEach(r => {
-    const region = r.partA?.region || getRegionFromState(r.partA?.state || '') || 'Central';
+    const region = users.find(user => user.id === r.createdByUserId)?.region?.trim() || 'Unassigned';
     if (!regionMap[region]) {
       regionMap[region] = { count: 0, approvedCount: 0, approvedValue: 0, value: 0 };
     }
