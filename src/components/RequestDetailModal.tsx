@@ -180,29 +180,43 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   };
 
   return (
-    <div id="request-detail-modal-backdrop" className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full overflow-hidden border border-slate-200 my-8">
+    <div id="request-detail-modal-backdrop" className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[calc(100dvh-1rem)] overflow-hidden border border-slate-200 my-2 sm:my-8 flex flex-col">
+        <style>{`
+          @media (max-width: 640px) {
+            #request-detail-modal-backdrop [class~="text-xs"] { font-size: 0.65rem; }
+            #request-detail-modal-backdrop [class~="text-sm"] { font-size: 0.75rem; }
+            #request-detail-modal-backdrop [class~="text-base"] { font-size: 0.875rem; }
+            #request-detail-modal-backdrop [class~="text-lg"] { font-size: 1rem; }
+            #request-detail-modal-backdrop [class~="text-xl"] { font-size: 1.125rem; }
+            #request-detail-modal-backdrop [class~="text-[10px]"] { font-size: 9px; }
+            #request-detail-modal-backdrop [class~="text-[11px]"] { font-size: 10px; }
+          }
+        `}</style>
+
         {/* Printable Section Header */}
-        <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="bg-slate-900 text-white px-3 py-3 sm:px-6 sm:py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 w-full sm:w-auto">
             <div className="p-2.5 bg-blue-600 rounded-xl">
               <Smartphone className="w-5 h-5 text-white" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold">{request.partA.eventName}</h2>
-                <span className="font-mono text-xs bg-slate-800 text-blue-300 px-2 py-0.5 rounded border border-slate-700">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 min-w-0">
+                <h2 className="text-sm sm:text-base font-bold min-w-0 break-all">{request.partA.eventName}</h2>
+                <span className="font-mono text-[10px] sm:text-xs bg-slate-800 text-blue-300 px-2 py-0.5 rounded border border-slate-700 shrink-0 whitespace-nowrap">
                   {request.requestCode}
                 </span>
               </div>
-              <p className="text-xs text-slate-300">
+              <p className="text-[10px] sm:text-xs text-slate-300">
                 Created by {request.createdByName} on {formatDate(request.createdAt)}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <StatusBadge status={request.status === 'Pending Sales Acceptance' ? 'Pending Head of Operation' : request.status} size="lg" />
+          <div className="flex items-center gap-2 self-end sm:self-auto max-w-full">
+            <div className="max-w-[calc(100vw-5rem)] sm:max-w-none">
+              <StatusBadge status={request.status === 'Pending Sales Acceptance' ? 'Pending Head of Operation' : request.status} size="lg" />
+            </div>
             <button
               id="btn-close-detail-modal"
               onClick={onClose}
@@ -214,12 +228,12 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
         </div>
 
         {/* Modal Printable Content Area */}
-        <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto print:max-h-none print:p-0">
+        <div className="p-3 sm:p-6 space-y-4 sm:space-y-6 max-h-[75vh] min-h-0 overflow-y-auto print:max-h-none print:p-0">
           {/* Workflow Stepper */}
           <WorkflowStepper status={request.status} />
 
           {/* Part A: Roadshow Details Grid */}
-          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-5 space-y-3">
+          <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 sm:p-5 space-y-3">
             <div className="flex items-center justify-between border-b border-slate-200 pb-2">
               <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
                 <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-800 flex items-center justify-center text-[10px]">A</span>
@@ -281,8 +295,8 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
 
           {/* Part B: Device Information */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2 min-w-0">
                 <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center text-[10px]">B</span>
                 Part B: Requested Device Inventory ({request.partB.length} Items)
               </h3>
@@ -322,7 +336,10 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
               </div>
             </div>
 
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm min-w-0">
+              <div className="px-3 py-2 text-[10px] text-slate-500 sm:hidden">
+                Swipe left or right to view all device details.
+              </div>
               {(() => {
                 const isAllocatedStage = 
                   request.status === 'Pending Sales Acceptance' || 
@@ -331,7 +348,8 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                   request.status === 'Rejected';
                 const showAllocatedDetails = (currentUser.role !== 'Sales Team' && currentUser.role !== 'Head of Sales') || isAllocatedStage;
                 return (
-                  <table className="w-full text-left text-xs border-collapse">
+                  <div className="w-full max-w-full overflow-x-auto overscroll-x-contain touch-pan-x">
+                  <table className="w-full min-w-[900px] sm:min-w-0 text-left text-xs border-collapse">
                     <thead className="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
                       <tr>
                         <th className="p-3">#</th>
@@ -404,6 +422,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                       </tr>
                     </tfoot>
                   </table>
+                  </div>
                 );
               })()}
             </div>

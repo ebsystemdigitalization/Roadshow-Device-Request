@@ -3,14 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Remix Roadshow Device Request Latest</title>
-    <meta name="description" content="Enterprise roadshow device request system with multi-tier approval workflows for Sales, Head of Sales, Device Team, Head of Operation, and Admin management." />
-    <meta property="og:title" content="Remix Roadshow Device Request Latest" />
-    <meta property="og:description" content="Enterprise roadshow device request system with multi-tier approval workflows for Sales, Head of Sales, Device Team, Head of Operation, and Admin management." />
+    <meta name="theme-color" content="#111827" />
+    <meta name="description" content="Roadshow Device Request approval and inventory tracking portal." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="RDR" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/rdr-192.png" />
+    <link rel="apple-touch-icon" href="/icons/rdr-180.png" />
+    <title>Roadshow Device Request</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch((error) => {
+            console.error('RDR service worker registration failed:', error);
+          });
+        });
+      }
+    </script>
   </body>
 </html>
-

@@ -1,13 +1,36 @@
 import React, { useState } from 'react';
 import * as XLSX from 'xlsx';
 import { DeviceInventoryItem, UserRole, DeviceStatus } from '../types';
-import { parseDeviceInventoryCSV, generateSampleDeviceInventoryCSV, exportDeviceInventoryCSV, formatRM, generateId } from '../utils/formatters';
-import { Upload, Download, FileText, CheckCircle2, AlertCircle, X, Layers, Plus, Trash2, Search, Database, Smartphone, Edit2, Check, FileSpreadsheet, ChevronDown } from 'lucide-react';
+import {
+  parseDeviceInventoryCSV,
+  generateSampleDeviceInventoryCSV,
+  exportDeviceInventoryCSV,
+  formatRM,
+  generateId
+} from '../utils/formatters';
+import {
+  Upload,
+  Download,
+  FileText,
+  CheckCircle2,
+  AlertCircle,
+  X,
+  Plus,
+  Trash2,
+  Search,
+  Database,
+  Smartphone,
+  Edit2,
+  Check,
+  FileSpreadsheet,
+  ChevronDown
+} from 'lucide-react';
 
 function getInventoryHeaderError(text: string): string | null {
   try {
     const workbook = XLSX.read(text, { type: 'string', raw: false });
     const firstSheetName = workbook.SheetNames[0];
+
     if (!firstSheetName) {
       return 'The uploaded file is empty. Use the device inventory template and include at least one item.';
     }
@@ -19,6 +42,7 @@ function getInventoryHeaderError(text: string): string | null {
       defval: '',
       blankrows: false
     }) as unknown[][];
+
     const headerRow = rows.find(row =>
       row.some(value => String(value ?? '').trim() !== '')
     );
@@ -30,12 +54,17 @@ function getInventoryHeaderError(text: string): string | null {
     const headers = headerRow.map(value =>
       String(value ?? '').replace(/^\uFEFF/, '').trim().toLowerCase()
     );
+
     const requiredHeaders = [
       { label: 'Material', matches: (header: string) => header.includes('material') },
       { label: 'Descriptions', matches: (header: string) => header.includes('desc') },
-      { label: 'RRP (RM)', matches: (header: string) => header.includes('rrp') || header.includes('price') },
+      {
+        label: 'RRP (RM)',
+        matches: (header: string) => header.includes('rrp') || header.includes('price')
+      },
       { label: 'Remarks', matches: (header: string) => header.includes('remark') }
     ];
+
     const missingHeaders = requiredHeaders
       .filter(required => !headers.some(required.matches))
       .map(required => required.label);
@@ -48,6 +77,85 @@ function getInventoryHeaderError(text: string): string | null {
   } catch {
     return 'Could not read the file headers. Please upload a valid device inventory CSV or Excel template.';
   }
+}
+
+function getDuplicateMaterialError(
+  items: DeviceInventoryItem[],
+  existingInventory: DeviceInventoryItem[] = []
+): string | null {
+  const uploadedCounts = new Map<string, { material: string; count: number }>();
+
+  items.forEach(item => {
+    const material = (item.material || '').trim();
+    if (!material) return;
+
+    const key = material.toLowerCase();
+    const existing = uploadedCounts.get(key);
+
+    uploadedCounts.set(key, {
+      material: existing?.material || material,
+      count: (existing?.count || 0) + 1
+    });
+  });
+
+  const uploadDuplicates = Array.from(uploadedCounts.values())
+    .filter(item => item.count > 1);
+
+  if (uploadDuplicates.length > 0) {
+    const summary = uploadDuplicates
+      .slice(0, 3)
+      .map(item => `"${item.material}" (found ${item.count} times)`)
+      .join(', ');
+
+    const more = uploadDuplicates.length > 3
+      ? ` and ${uploadDuplicates.length - 3} more`
+      : '';
+
+    return `Duplicate Material detected in upload: ${summary}${more}. Each inventory item must have a unique Material code.`;
+  }
+
+  const existingMaterials = new Map<string, string>();
+
+  existingInventory.forEach(item => {
+    const material = (item.material || '').trim();
+    if (!material) return;
+
+    const key = material.toLowerCase();
+    if (!existingMaterials.has(key)) {
+      existingMaterials.set(key, material);
+    }
+  });
+
+  const alreadyInCatalog = new Map<string, string>();
+
+  items.forEach(item => {
+    const material = (item.material || '').trim();
+    if (!material) return;
+
+    const key = material.toLowerCase();
+    const existingMaterial = existingMaterials.get(key);
+
+    if (existingMaterial && !alreadyInCatalog.has(key)) {
+      alreadyInCatalog.set(key, existingMaterial);
+    }
+  });
+
+  const catalogDuplicates = Array.from(alreadyInCatalog.values());
+
+  if (catalogDuplicates.length > 0) {
+    const summary = catalogDuplicates
+      .slice(0, 3)
+      .map(material => `"${material}"`)
+      .join(', ');
+
+    const more = catalogDuplicates.length > 3
+      ? ` and ${catalogDuplicates.length - 3} more`
+      : '';
+
+    return `Material already exists in the current catalog: ${summary}${more}. Remove it from the upload or choose Replace catalog.`;
+  }
+
+  return null;
 }
 
 interface DeviceInventoryUploadModalProps {
@@ -77,11 +185,9 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [templateDropdownOpen, setTemplateDropdownOpen] = useState<boolean>(false);
 
-  // Search and status filter for catalog tab
   const [catalogSearch, setCatalogSearch] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
-  // Single manual item creation
   const [showSingleAdd, setShowSingleAdd] = useState<boolean>(false);
   const [newItem, setNewItem] = useState<{
     material: string;
@@ -99,7 +205,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     deviceStatus: 'In Stock'
   });
 
-  // Inline editing for catalog items
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<{
     material: string;
@@ -132,7 +237,14 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
 
   const handleCancelEdit = () => {
     setEditingId(null);
-    setEditForm({ material: '', description: '', brand: '', rrpRM: '', remarks: '', deviceStatus: 'In Stock' });
+    setEditForm({
+      material: '',
+      description: '',
+      brand: '',
+      rrpRM: '',
+      remarks: '',
+      deviceStatus: 'In Stock'
+    });
   };
 
   const handleSaveEdit = (id: string) => {
@@ -140,6 +252,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
       setErrorMsg('Material code and Descriptions are required.');
       return;
     }
+
     const updatedItem: DeviceInventoryItem = {
       id,
       material: editForm.material.trim(),
@@ -154,7 +267,9 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     if (onUpdateInventoryItem) {
       onUpdateInventoryItem(updatedItem);
     } else {
-      const updatedList = currentInventory.map(item => item.id === id ? updatedItem : item);
+      const updatedList = currentInventory.map(item =>
+        item.id === id ? updatedItem : item
+      );
       onSaveInventory(updatedList, false);
     }
 
@@ -168,9 +283,12 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
 
   const handleTextChange = (text: string) => {
     setCsvContent(text);
+
     if (!text.trim()) {
       setParsedItems([]);
-      setErrorMsg('The uploaded file is empty. Use the device inventory template and include at least one item.');
+      setErrorMsg(
+        'The uploaded file is empty. Use the device inventory template and include at least one item.'
+      );
       return;
     }
 
@@ -180,14 +298,24 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
       setErrorMsg(headerError);
       return;
     }
+
     try {
       const items = parseDeviceInventoryCSV(text);
       setParsedItems(items);
+
       if (items.length === 0) {
-        setErrorMsg('Could not parse any valid device inventory items. Ensure header format: Material, Descriptions, RRP (RM), Remarks.');
-      } else {
-        setErrorMsg(null);
+        setErrorMsg(
+          'Could not parse any valid device inventory items. Ensure header format: Material, Descriptions, RRP (RM), Remarks.'
+        );
+        return;
       }
+
+      const duplicateError = getDuplicateMaterialError(
+        items,
+        appendMode ? currentInventory : []
+      );
+
+      setErrorMsg(duplicateError);
     } catch {
       setParsedItems([]);
       setErrorMsg('Error parsing CSV format. Please check syntax.');
@@ -198,43 +326,55 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const isExcel = file.name.toLowerCase().endsWith('.xlsx') || file.name.toLowerCase().endsWith('.xls');
+    const isExcel =
+      file.name.toLowerCase().endsWith('.xlsx') ||
+      file.name.toLowerCase().endsWith('.xls');
 
     if (isExcel) {
       const reader = new FileReader();
-      reader.onload = (event) => {
+
+      reader.onload = event => {
         try {
           const buffer = event.target?.result as ArrayBuffer;
           const workbook = XLSX.read(buffer, { type: 'array' });
           const firstSheetName = workbook.SheetNames[0];
+
           if (!firstSheetName) {
             handleTextChange('');
             return;
           }
+
           const worksheet = workbook.Sheets[firstSheetName];
           const csvText = XLSX.utils.sheet_to_csv(worksheet);
           handleTextChange(csvText);
         } catch (err) {
           console.error(err);
           setParsedItems([]);
-          setErrorMsg('Failed to parse Excel file. Please ensure it is a valid .xlsx or .xls file.');
+          setErrorMsg(
+            'Failed to parse Excel file. Please ensure it is a valid .xlsx or .xls file.'
+          );
         }
       };
+
       reader.onerror = () => {
         setParsedItems([]);
         setErrorMsg('Failed to read uploaded Excel file.');
       };
+
       reader.readAsArrayBuffer(file);
     } else {
       const reader = new FileReader();
-      reader.onload = (event) => {
+
+      reader.onload = event => {
         const text = event.target?.result as string;
         handleTextChange(text || '');
       };
+
       reader.onerror = () => {
         setParsedItems([]);
         setErrorMsg('Failed to read uploaded CSV file.');
       };
+
       reader.readAsText(file);
     }
   };
@@ -243,6 +383,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     const csvData = currentInventory && currentInventory.length > 0
       ? exportDeviceInventoryCSV(currentInventory)
       : generateSampleDeviceInventoryCSV();
+
     const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -251,6 +392,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
     setTemplateDropdownOpen(false);
     setSuccessMsg(`Downloaded CSV template (${currentInventory?.length || 0} items)!`);
     setTimeout(() => setSuccessMsg(null), 3000);
@@ -316,14 +458,17 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
       }
     ];
 
-    const sourceItems = currentInventory && currentInventory.length > 0 ? currentInventory : defaultSamples;
+    const sourceItems =
+      currentInventory && currentInventory.length > 0
+        ? currentInventory
+        : defaultSamples;
 
     const rows = sourceItems.map(item => ({
-      'Material': item.material,
-      'Descriptions': item.description,
-      'Brand': item.brand || 'Samsung',
+      Material: item.material,
+      Descriptions: item.description,
+      Brand: item.brand || 'Samsung',
       'RRP (RM)': item.rrpRM || 0,
-      'Remarks': item.remarks || '',
+      Remarks: item.remarks || '',
       'Device Status': item.deviceStatus || 'In Stock'
     }));
 
@@ -340,6 +485,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Device_Inventory');
     XLSX.writeFile(workbook, 'device_inventory_template.xlsx');
+
     setTemplateDropdownOpen(false);
     setSuccessMsg(`Downloaded XLSX template (${rows.length} items)!`);
     setTimeout(() => setSuccessMsg(null), 3000);
@@ -356,8 +502,23 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
 
   const handleConfirmImport = () => {
     if (parsedItems.length === 0) return;
+
+    const duplicateError = getDuplicateMaterialError(
+      parsedItems,
+      appendMode ? currentInventory : []
+    );
+
+    if (duplicateError) {
+      setErrorMsg(duplicateError);
+      setSuccessMsg(null);
+      return;
+    }
+
     onSaveInventory(parsedItems, appendMode);
-    setSuccessMsg(`Successfully ${appendMode ? 'added' : 'imported'} ${parsedItems.length} inventory items!`);
+    setSuccessMsg(
+      `Successfully ${appendMode ? 'added' : 'imported'} ${parsedItems.length} inventory items!`
+    );
+
     setTimeout(() => {
       setSuccessMsg(null);
       setActiveView('catalog');
@@ -366,6 +527,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
 
   const handleAddSingleItem = (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!newItem.material.trim() || !newItem.description.trim()) {
       setErrorMsg('Material code and Descriptions are required.');
       return;
@@ -383,7 +545,14 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
     };
 
     onSaveInventory([item], true);
-    setNewItem({ material: '', description: '', brand: '', rrpRM: '', remarks: '', deviceStatus: 'In Stock' });
+    setNewItem({
+      material: '',
+      description: '',
+      brand: '',
+      rrpRM: '',
+      remarks: '',
+      deviceStatus: 'In Stock'
+    });
     setShowSingleAdd(false);
     setErrorMsg(null);
     setSuccessMsg('Single inventory device added!');
@@ -392,21 +561,38 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
 
   const filteredCatalog = currentInventory.filter(item => {
     const status = item.deviceStatus || 'In Stock';
+    const query = catalogSearch.toLowerCase();
+
     const matchesSearch =
-      item.material.toLowerCase().includes(catalogSearch.toLowerCase()) ||
-      item.description.toLowerCase().includes(catalogSearch.toLowerCase()) ||
-      (item.brand && item.brand.toLowerCase().includes(catalogSearch.toLowerCase())) ||
-      (item.remarks && item.remarks.toLowerCase().includes(catalogSearch.toLowerCase())) ||
-      status.toLowerCase().includes(catalogSearch.toLowerCase());
-    const matchesStatus = statusFilter === 'ALL' || status === statusFilter;
+      item.material.toLowerCase().includes(query) ||
+      item.description.toLowerCase().includes(query) ||
+      (item.brand && item.brand.toLowerCase().includes(query)) ||
+      (item.remarks && item.remarks.toLowerCase().includes(query)) ||
+      status.toLowerCase().includes(query);
+
+    const matchesStatus =
+      statusFilter === 'ALL' || status === statusFilter;
+
     return matchesSearch && matchesStatus;
   });
 
+  const setImportMode = (isAppend: boolean) => {
+    setAppendMode(isAppend);
+
+    const duplicateError = getDuplicateMaterialError(
+      parsedItems,
+      isAppend ? currentInventory : []
+    );
+
+    setErrorMsg(duplicateError);
+  };
+
   return (
-    <div id="device-inventory-upload-modal-backdrop" className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+    <div
+      id="device-inventory-upload-modal-backdrop"
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+    >
       <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full overflow-hidden border border-slate-200 my-8">
-        
-        {/* Header */}
         <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-blue-600 rounded-xl shadow-md shadow-blue-500/20">
@@ -424,6 +610,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
               </p>
             </div>
           </div>
+
           <button
             id="btn-close-device-inventory-modal"
             onClick={onClose}
@@ -433,7 +620,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           </button>
         </div>
 
-        {/* View Switcher Tabs */}
         <div className="bg-slate-100 border-b border-slate-200 px-6 py-2.5 flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <button
@@ -448,6 +634,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
               <Upload className="w-3.5 h-3.5" />
               <span>Upload / Bulk Import CSV & XLSX</span>
             </button>
+
             <button
               id="tab-inventory-catalog"
               onClick={() => setActiveView('catalog')}
@@ -480,10 +667,12 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                   className="fixed inset-0 z-10"
                   onClick={() => setTemplateDropdownOpen(false)}
                 />
+
                 <div className="absolute right-0 mt-1.5 w-64 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-20 text-xs animate-in fade-in zoom-in-95 duration-100">
                   <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
                     Select Template Format
                   </div>
+
                   <button
                     id="btn-download-device-template-xlsx"
                     type="button"
@@ -498,6 +687,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       <div className="text-[10px] text-slate-500">Formatted workbook with column widths</div>
                     </div>
                   </button>
+
                   <button
                     id="btn-download-device-template-csv"
                     type="button"
@@ -518,7 +708,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           </div>
         </div>
 
-        {/* Required Fields Banner */}
         <div className="bg-blue-50/80 border-b border-blue-100 px-6 py-2 flex items-center gap-2 text-xs text-blue-900">
           <FileText className="w-4 h-4 text-blue-600 flex-shrink-0" />
           <span className="font-semibold text-blue-950">Supported Inventory Columns:</span>
@@ -532,13 +721,13 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           </div>
         </div>
 
-        {/* Success / Error Messages */}
         {successMsg && (
           <div className="bg-emerald-50 border-b border-emerald-200 text-emerald-800 px-6 py-2.5 text-xs font-semibold flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <span>{successMsg}</span>
           </div>
         )}
+
         {errorMsg && (
           <div className="bg-rose-50 border-b border-rose-200 text-rose-800 px-6 py-2.5 text-xs font-semibold flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
@@ -546,17 +735,17 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           </div>
         )}
 
-        {/* Tab 1: Upload View */}
         {activeView === 'upload' && (
           <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
-            {/* Drag & Drop File Upload Area */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-2xl p-5 text-center bg-slate-50/50 transition-all flex flex-col items-center justify-center">
                 <div className="p-3 bg-blue-100 rounded-full text-blue-600 mb-2">
                   <Upload className="w-6 h-6" />
                 </div>
+
                 <h3 className="text-xs font-bold text-slate-800 mb-1">Upload Excel (.xlsx) / CSV File</h3>
                 <p className="text-[11px] text-slate-500 mb-3">Drag `.xlsx` or `.csv` file here or browse from disk</p>
+
                 <label className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-xl text-xs font-bold shadow-sm transition-colors cursor-pointer inline-flex items-center gap-1.5">
                   <Upload className="w-3.5 h-3.5" />
                   <span>Choose File</span>
@@ -570,7 +759,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                 </label>
               </div>
 
-              {/* Sample loader card */}
               <div className="bg-slate-900 text-white rounded-2xl p-5 flex flex-col justify-between border border-slate-800">
                 <div>
                   <div className="flex items-center justify-between mb-2">
@@ -579,6 +767,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                     </span>
                     <FileSpreadsheet className="w-4 h-4 text-slate-400" />
                   </div>
+
                   <h4 className="text-xs font-bold text-white mb-1">Load Standard Device Catalog</h4>
                   <p className="text-[11px] text-slate-300">
                     Instantly load predefined sample inventory rows matching the required details (Material, Descriptions, Brand, RRP, Remarks, Device Status).
@@ -593,6 +782,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                   >
                     Load Sample CSV
                   </button>
+
                   <div className="flex items-center gap-2">
                     <button
                       id="btn-download-sample-xlsx-alt"
@@ -614,23 +804,22 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
               </div>
             </div>
 
-            {/* CSV Copy Paste Box */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-700 flex items-center justify-between">
                 <span>Copy-Paste CSV Text directly:</span>
                 <span className="text-[11px] font-normal text-slate-500">Comma-separated standard format</span>
               </label>
+
               <textarea
                 id="textarea-device-inventory-csv"
                 rows={4}
                 value={csvContent}
-                onChange={(e) => handleTextChange(e.target.value)}
+                onChange={e => handleTextChange(e.target.value)}
                 placeholder={`Material,Descriptions,Brand,RRP (RM),Remarks,Device Status\nMAT-S24U-512,Galaxy S24 Ultra 512GB Titanium Gray,Samsung,6299,High demand roadshow stock,In Stock\nMAT-BP2-WHT,Galaxy Buds2 Pro White,Samsung,899,End of life promotional stock,EOL`}
                 className="w-full text-xs font-mono p-3 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none"
               />
             </div>
 
-            {/* Mode Toggle & Summary */}
             {parsedItems.length > 0 && (
               <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
@@ -648,18 +837,19 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                         type="radio"
                         name="inventoryImportMode"
                         checked={appendMode}
-                        onChange={() => setAppendMode(true)}
+                        onChange={() => setImportMode(true)}
                         className="text-blue-600 focus:ring-blue-500"
                       />
                       <span>Append to existing ({currentInventory.length})</span>
                     </label>
+
                     <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
                       <input
                         id="radio-inventory-mode-replace"
                         type="radio"
                         name="inventoryImportMode"
                         checked={!appendMode}
-                        onChange={() => setAppendMode(false)}
+                        onChange={() => setImportMode(false)}
                         className="text-blue-600 focus:ring-blue-500"
                       />
                       <span className="text-rose-700 font-semibold">Replace catalog</span>
@@ -667,7 +857,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                   </div>
                 </div>
 
-                {/* Parsed Items Preview Table */}
                 <div className="overflow-x-auto max-h-48 border border-slate-200 rounded-xl bg-white">
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
@@ -681,6 +870,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                         <th className="p-2.5">Device Status</th>
                       </tr>
                     </thead>
+
                     <tbody className="divide-y divide-slate-100">
                       {parsedItems.map((item, idx) => (
                         <tr key={idx} className="hover:bg-slate-50">
@@ -717,10 +907,17 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                   <span className="text-xs text-slate-500">
                     Ready to update master inventory data.
                   </span>
+
                   <button
                     id="btn-confirm-inventory-import"
                     onClick={handleConfirmImport}
-                    className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-xl text-xs font-bold shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
+                    disabled={Boolean(
+                      getDuplicateMaterialError(
+                        parsedItems,
+                        appendMode ? currentInventory : []
+                      )
+                    )}
+                    className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-400 disabled:cursor-not-allowed text-white px-5 py-2 rounded-xl text-xs font-bold shadow-md shadow-emerald-600/20 transition-all cursor-pointer"
                   >
                     <CheckCircle2 className="w-4 h-4" />
                     <span>Confirm & Upload Inventory</span>
@@ -731,10 +928,8 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           </div>
         )}
 
-        {/* Tab 2: Catalog View */}
         {activeView === 'catalog' && (
           <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
-            {/* Catalog Toolbar */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-3 rounded-2xl border border-slate-200">
               <div className="relative flex-1">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -742,7 +937,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                   id="input-search-inventory-catalog"
                   type="text"
                   value={catalogSearch}
-                  onChange={(e) => setCatalogSearch(e.target.value)}
+                  onChange={e => setCatalogSearch(e.target.value)}
                   placeholder="Search catalog by material, description, brand, status or remarks..."
                   className="w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none"
                 />
@@ -754,7 +949,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                   <select
                     id="select-inventory-status-filter"
                     value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
+                    onChange={e => setStatusFilter(e.target.value)}
                     className="border border-slate-300 rounded-xl px-2.5 py-1 text-xs bg-white outline-none focus:ring-2 focus:ring-blue-500 font-semibold text-slate-700"
                   >
                     <option value="ALL">All ({currentInventory.length})</option>
@@ -774,12 +969,18 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
               </div>
             </div>
 
-            {/* Single Add Form overlay */}
             {showSingleAdd && (
-              <form onSubmit={handleAddSingleItem} className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+              <form
+                onSubmit={handleAddSingleItem}
+                className="bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3"
+              >
                 <div className="flex items-center justify-between text-xs font-bold text-blue-900 border-b border-blue-200 pb-2">
                   <span>Add Single Device to Master Catalog</span>
-                  <button type="button" onClick={() => setShowSingleAdd(false)} className="text-slate-400 hover:text-slate-600">
+                  <button
+                    type="button"
+                    onClick={() => setShowSingleAdd(false)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
@@ -793,7 +994,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       required
                       placeholder="e.g. MAT-S24U-512"
                       value={newItem.material || ''}
-                      onChange={(e) => setNewItem({ ...newItem, material: e.target.value })}
+                      onChange={e => setNewItem({ ...newItem, material: e.target.value })}
                       className="w-full p-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white font-mono font-bold"
                     />
                   </div>
@@ -806,7 +1007,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       required
                       placeholder="e.g. Galaxy S24 Ultra 512GB"
                       value={newItem.description || ''}
-                      onChange={(e) => setNewItem({ ...newItem, description: e.target.value })}
+                      onChange={e => setNewItem({ ...newItem, description: e.target.value })}
                       className="w-full p-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                     />
                   </div>
@@ -818,7 +1019,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       type="text"
                       placeholder="e.g. Samsung / Apple / Vivo"
                       value={newItem.brand || ''}
-                      onChange={(e) => setNewItem({ ...newItem, brand: e.target.value })}
+                      onChange={e => setNewItem({ ...newItem, brand: e.target.value })}
                       className="w-full p-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white font-medium"
                     />
                   </div>
@@ -832,7 +1033,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       required
                       placeholder="e.g. 6299"
                       value={newItem.rrpRM ?? ''}
-                      onChange={(e) => setNewItem({ ...newItem, rrpRM: e.target.value })}
+                      onChange={e => setNewItem({ ...newItem, rrpRM: e.target.value })}
                       className="w-full p-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white font-bold text-emerald-700"
                     />
                   </div>
@@ -844,7 +1045,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       type="text"
                       placeholder="e.g. Main warehouse stock"
                       value={newItem.remarks || ''}
-                      onChange={(e) => setNewItem({ ...newItem, remarks: e.target.value })}
+                      onChange={e => setNewItem({ ...newItem, remarks: e.target.value })}
                       className="w-full p-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                     />
                   </div>
@@ -854,7 +1055,12 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                     <select
                       id="input-new-device-status"
                       value={newItem.deviceStatus || 'In Stock'}
-                      onChange={(e) => setNewItem({ ...newItem, deviceStatus: e.target.value as DeviceStatus })}
+                      onChange={e =>
+                        setNewItem({
+                          ...newItem,
+                          deviceStatus: e.target.value as DeviceStatus
+                        })
+                      }
                       className="w-full p-2 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-white font-semibold"
                     >
                       <option value="In Stock">In Stock</option>
@@ -882,7 +1088,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
               </form>
             )}
 
-            {/* Catalog Table */}
             {filteredCatalog.length === 0 ? (
               <div className="text-center py-12 bg-slate-50 border border-slate-200 rounded-2xl">
                 <Smartphone className="w-8 h-8 text-slate-300 mx-auto mb-2" />
@@ -913,69 +1118,93 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                       <th className="p-3 text-center">Action</th>
                     </tr>
                   </thead>
+
                   <tbody className="divide-y divide-slate-100">
                     {filteredCatalog.map((item, index) => {
                       const isEditing = editingId === item.id;
                       const statusVal = item.deviceStatus || 'In Stock';
+
                       return (
-                        <tr key={item.id} className={isEditing ? "bg-amber-50/80 transition-colors" : "hover:bg-blue-50/50 transition-colors"}>
-                          <td className="p-3 text-slate-400 text-[11px] font-mono align-middle">{index + 1}</td>
-                          
-                          {/* 1. Material */}
+                        <tr
+                          key={item.id}
+                          className={
+                            isEditing
+                              ? 'bg-amber-50/80 transition-colors'
+                              : 'hover:bg-blue-50/50 transition-colors'
+                          }
+                        >
+                          <td className="p-3 text-slate-400 text-[11px] font-mono align-middle">
+                            {index + 1}
+                          </td>
+
                           <td className="p-2 align-middle">
                             {isEditing ? (
                               <input
                                 id={`edit-material-${item.id}`}
                                 type="text"
                                 value={editForm.material || ''}
-                                onChange={e => setEditForm(prev => ({ ...prev, material: e.target.value }))}
+                                onChange={e =>
+                                  setEditForm(prev => ({
+                                    ...prev,
+                                    material: e.target.value
+                                  }))
+                                }
                                 className="w-full p-1.5 text-xs font-mono font-bold text-blue-900 border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                                 placeholder="Material code"
                               />
                             ) : (
-                              <span className="font-mono font-bold text-blue-900">{item.material}</span>
+                              <span className="font-mono font-bold text-blue-900">
+                                {item.material}
+                              </span>
                             )}
                           </td>
 
-                          {/* 2. Descriptions */}
                           <td className="p-2 align-middle">
                             {isEditing ? (
                               <input
                                 id={`edit-desc-${item.id}`}
                                 type="text"
                                 value={editForm.description || ''}
-                                onChange={e => setEditForm(prev => ({ ...prev, description: e.target.value }))}
+                                onChange={e =>
+                                  setEditForm(prev => ({
+                                    ...prev,
+                                    description: e.target.value
+                                  }))
+                                }
                                 className="w-full p-1.5 text-xs text-slate-800 font-medium border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                                 placeholder="Description"
                               />
                             ) : (
-                              <span className="text-slate-800 font-medium">{item.description}</span>
+                              <span className="text-slate-800 font-medium">
+                                {item.description}
+                              </span>
                             )}
                           </td>
 
-                          {/* 3. Brand */}
                           <td className="p-2 align-middle">
                             {isEditing ? (
                               <input
                                 id={`edit-brand-${item.id}`}
                                 type="text"
                                 value={editForm.brand || ''}
-                                onChange={e => setEditForm(prev => ({ ...prev, brand: e.target.value }))}
+                                onChange={e =>
+                                  setEditForm(prev => ({
+                                    ...prev,
+                                    brand: e.target.value
+                                  }))
+                                }
                                 className="w-full p-1.5 text-xs text-slate-800 font-semibold border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                                 placeholder="Brand"
                               />
+                            ) : item.brand ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200">
+                                {item.brand}
+                              </span>
                             ) : (
-                              item.brand ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200">
-                                  {item.brand}
-                                </span>
-                              ) : (
-                                <span className="text-slate-300 italic text-[11px]">-</span>
-                              )
+                              <span className="text-slate-300 italic text-[11px]">-</span>
                             )}
                           </td>
 
-                          {/* 4. RRP (RM) */}
                           <td className="p-2 text-right align-middle">
                             {isEditing ? (
                               <input
@@ -983,38 +1212,57 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                                 type="number"
                                 step="0.01"
                                 value={editForm.rrpRM ?? ''}
-                                onChange={e => setEditForm(prev => ({ ...prev, rrpRM: e.target.value }))}
+                                onChange={e =>
+                                  setEditForm(prev => ({
+                                    ...prev,
+                                    rrpRM: e.target.value
+                                  }))
+                                }
                                 className="w-28 p-1.5 text-xs font-bold text-emerald-700 text-right border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                                 placeholder="RRP (RM)"
                               />
                             ) : (
-                              <span className="font-bold text-emerald-700">{formatRM(item.rrpRM)}</span>
+                              <span className="font-bold text-emerald-700">
+                                {formatRM(item.rrpRM)}
+                              </span>
                             )}
                           </td>
 
-                          {/* 5. Remarks */}
                           <td className="p-2 align-middle">
                             {isEditing ? (
                               <input
                                 id={`edit-remarks-${item.id}`}
                                 type="text"
                                 value={editForm.remarks || ''}
-                                onChange={e => setEditForm(prev => ({ ...prev, remarks: e.target.value }))}
+                                onChange={e =>
+                                  setEditForm(prev => ({
+                                    ...prev,
+                                    remarks: e.target.value
+                                  }))
+                                }
                                 className="w-full p-1.5 text-xs text-slate-700 border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                                 placeholder="Remarks..."
                               />
                             ) : (
-                              <span className="text-slate-600 text-[11px]">{item.remarks || <span className="text-slate-300 italic">None</span>}</span>
+                              <span className="text-slate-600 text-[11px]">
+                                {item.remarks || (
+                                  <span className="text-slate-300 italic">None</span>
+                                )}
+                              </span>
                             )}
                           </td>
 
-                          {/* 6. Device Status */}
                           <td className="p-2 align-middle">
                             {isEditing ? (
                               <select
                                 id={`edit-status-${item.id}`}
                                 value={editForm.deviceStatus || 'In Stock'}
-                                onChange={e => setEditForm(prev => ({ ...prev, deviceStatus: e.target.value as DeviceStatus }))}
+                                onChange={e =>
+                                  setEditForm(prev => ({
+                                    ...prev,
+                                    deviceStatus: e.target.value as DeviceStatus
+                                  }))
+                                }
                                 className="w-full p-1.5 text-xs font-bold border border-blue-400 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                               >
                                 <option value="In Stock">In Stock</option>
@@ -1027,14 +1275,15 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                                   : 'bg-rose-50 text-rose-700 border-rose-200'
                               }`}>
                                 <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${
-                                  statusVal === 'In Stock' ? 'bg-emerald-500' : 'bg-rose-500'
-                                }}`}></span>
+                                  statusVal === 'In Stock'
+                                    ? 'bg-emerald-500'
+                                    : 'bg-rose-500'
+                                }`} />
                                 {statusVal}
                               </span>
                             )}
                           </td>
 
-                          {/* Action */}
                           <td className="p-2 text-center align-middle">
                             {isEditing ? (
                               <div className="flex items-center justify-center gap-1">
@@ -1048,6 +1297,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                                   <Check className="w-3.5 h-3.5" />
                                   <span>Save</span>
                                 </button>
+
                                 <button
                                   id={`btn-cancel-edit-${item.id}`}
                                   type="button"
@@ -1069,6 +1319,7 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
                                 >
                                   <Edit2 className="w-4 h-4" />
                                 </button>
+
                                 {onDeleteInventoryItem && (
                                   <button
                                     id={`btn-delete-inventory-${item.id}`}
@@ -1093,11 +1344,12 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
           </div>
         )}
 
-        {/* Footer */}
         <div className="bg-slate-50 border-t border-slate-200 px-6 py-3 flex items-center justify-between">
           <div className="text-[11px] text-slate-500">
-            Total Inventory Items: <strong className="text-slate-800">{currentInventory.length}</strong>
+            Total Inventory Items:{' '}
+            <strong className="text-slate-800">{currentInventory.length}</strong>
           </div>
+
           <button
             onClick={onClose}
             className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-semibold cursor-pointer"
@@ -1105,7 +1357,6 @@ export const DeviceInventoryUploadModal: React.FC<DeviceInventoryUploadModalProp
             Close
           </button>
         </div>
-
       </div>
     </div>
   );
