@@ -8,6 +8,7 @@ import {
 } from 'firebase/messaging';
 import { auth } from '../lib/firebase';
 import firebaseApp, { firebaseConfig } from '../lib/firebase';
+import type { RdrInAppNotification } from '../types';
 
 const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').trim().replace(/\/$/, '');
 const vapidKey = String(import.meta.env.VITE_FIREBASE_VAPID_KEY || '').trim();
@@ -84,6 +85,47 @@ async function sendTokenToBackend(method: 'POST' | 'DELETE', token: string): Pro
   if (!response.ok) {
     throw new Error(result.message || 'RDR could not save the notification setting.');
   }
+}
+
+async function requestInAppNotifications<T>(
+  path: string,
+  method: 'GET' | 'POST' = 'GET'
+): Promise<T> {
+  if (!apiBaseUrl) throw new Error('The RDR API URL is not configured.');
+  const user = auth.currentUser;
+  if (!user) throw new Error('Sign in to RDR to view notifications.');
+
+  const idToken = await user.getIdToken();
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    method,
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${idToken}`
+    }
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result.message || 'RDR could not load your notifications.');
+  }
+  return result as T;
+}
+
+export async function getInAppNotifications(): Promise<RdrInAppNotification[]> {
+  const result = await requestInAppNotifications<{ items?: RdrInAppNotification[] }>(
+    '/api/notifications'
+  );
+  return Array.isArray(result.items) ? result.items : [];
+}
+
+export async function markInAppNotificationRead(notificationId: string): Promise<void> {
+  await requestInAppNotifications(
+    `/api/notifications/${encodeURIComponent(notificationId)}/read`,
+    'POST'
+  );
+}
+
+export async function markAllInAppNotificationsRead(): Promise<void> {
+  await requestInAppNotifications('/api/notifications/read-all', 'POST');
 }
 
 export async function registerPushNotifications(): Promise<void> {

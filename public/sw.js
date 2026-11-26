@@ -34,7 +34,7 @@ if (encodedFirebaseConfig) {
         icon: '/icons/rdr-192.png',
         badge: '/icons/rdr-180.png',
         data: { url: data.url || '/' },
-        tag: data.requestId || 'rdr-update'
+        tag: data.notificationId || data.requestId || 'rdr-update'
       });
     });
   } catch (error) {

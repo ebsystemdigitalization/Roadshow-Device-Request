@@ -110,6 +110,18 @@ export interface WorkflowHistoryLog {
   newStatus?: RequestStatus;
 }
 
+export interface RdrInAppNotification {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  requestId?: string;
+  requestCode?: string;
+  createdAt: string;
+  isRead: boolean;
+  readAt?: string;
+}
+
 export interface RoadshowRequest {
   id: string;
   requestCode: string;

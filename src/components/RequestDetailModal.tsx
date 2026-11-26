@@ -75,6 +75,21 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   const [isImeiDetailOpen, setIsImeiDetailOpen] = useState(false);
 
   const handleSaveImeis = (updatedPartB: PartBDeviceItem[], imeiRecords?: ImeiInventoryItem[]) => {
+    const seenImeis = new Set<string>();
+    const duplicateImeis = new Set<string>();
+
+    (imeiRecords || []).forEach(record => {
+      const key = (record.imei || '').trim().toLowerCase();
+      if (!key) return;
+      if (seenImeis.has(key)) duplicateImeis.add(key);
+      seenImeis.add(key);
+    });
+
+    if (duplicateImeis.size > 0) {
+      alert(`Duplicate Device IMEI No detected in uploaded file: ${Array.from(duplicateImeis).slice(0, 3).map(value => `"${value}"`).join(', ')}${duplicateImeis.size > 3 ? ` and ${duplicateImeis.size - 3} more` : ''}. Each device must have a unique IMEI.`);
+      return;
+    }
+
     if (onSaveDeviceEditsOnly && request) {
       onSaveDeviceEditsOnly(request.id, updatedPartB, imeiRecords);
     }
@@ -91,8 +106,13 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
   const isPendingHoo = request.status === 'Pending Head of Operation' || request.status === 'Pending Sales Acceptance';
 
 
-  const isOwnerSales = currentUser.role === 'Sales Team' && (request.createdByUserId === currentUser.id || currentUser.role === 'Sales Team');
-  const isDraftOrRejected = request.status === 'Draft' || request.status === 'Rejected';
+  const isOwnerSales = currentUser.role === 'Sales Team' && request.createdByUserId === currentUser.id;
+  const canEditSalesRequest = isOwnerSales &&
+    !request.headOfSalesApproval &&
+    !['Pending Sales Acceptance', 'Pending Head of Operation', 'Approved'].includes(request.status);
+  const canDeleteSalesRequest = isOwnerSales &&
+    !request.headOfSalesApproval &&
+    (request.status === 'Draft' || request.status === 'Rejected');
   const headOfSalesRejection = [...(request.history || [])].reverse().find(log =>
     log.actorRole === 'Head of Sales' && log.action === 'Rejected Request'
   );
@@ -880,9 +900,9 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
           {/* Action Buttons Depending on User Role */}
           <div className="flex items-center gap-2">
             {/* Sales Team Options */}
-            {isOwnerSales && isDraftOrRejected && (
+            {isOwnerSales && (canEditSalesRequest || canDeleteSalesRequest) && (
               <>
-                <button
+                {canDeleteSalesRequest && <button
                   id="btn-delete-sales-request"
                   onClick={() => {
                     if (onDeleteBySales) onDeleteBySales(request.id);
@@ -892,9 +912,9 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   <span>Delete</span>
-                </button>
+                </button>}
 
-                <button
+                {canEditSalesRequest && <button
                   id="btn-edit-sales-request"
                   onClick={() => {
                     if (onEditBySales) onEditBySales(request);
@@ -904,7 +924,7 @@ export const RequestDetailModal: React.FC<RequestDetailModalProps> = ({
                 >
                   <Edit3 className="w-3.5 h-3.5" />
                   <span>Edit Request</span>
-                </button>
+                </button>}
 
                 {request.status === 'Draft' && onSubmitBySales && (
                   <button

@@ -27,6 +27,7 @@ import {
   Building2,
   Calendar,
   Eye,
+  X,
   CheckSquare,
   RotateCcw,
   FileSpreadsheet,
@@ -39,6 +40,7 @@ interface DashboardAnalyticsProps {
   imeiInventory?: ImeiInventoryItem[];
   users?: User[];
   currentUser?: User;
+  onSelectRequest?: (request: RoadshowRequest) => void;
 }
 
 function getBrandTheme(brandName: string) {
@@ -144,8 +146,11 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
   deviceInventory = [],
   imeiInventory = [],
   users = [],
-  currentUser
+  currentUser,
+  onSelectRequest
 }) => {
+  const [selectedPipelineStatus, setSelectedPipelineStatus] = useState<string | null>(null);
+  const [pipelineSearch, setPipelineSearch] = useState('');
   const [roadshowSearch, setRoadshowSearch] = useState('');
   const [roadshowCurrentPage, setRoadshowCurrentPage] = useState<number>(1);
   const ROADSHOWS_PER_PAGE = 5;
@@ -824,11 +829,21 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
             {Object.entries(statusCounts).map(([statusKey, count]) => {
               const percentage = totalRequests > 0 ? Math.round((count / totalRequests) * 100) : 0;
               return (
-                <div key={statusKey} className="space-y-1">
+                <button
+                  key={statusKey}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPipelineStatus(statusKey);
+                    setPipelineSearch('');
+                  }}
+                  className="w-full text-left space-y-1 rounded-lg px-2 py-1.5 -mx-2 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 cursor-pointer"
+                  aria-label={`Open ${statusKey} requests (${count})`}
+                >
                   <div className="flex items-center justify-between text-xs">
                     <StatusBadge status={statusKey as any} size="sm" />
-                    <span className="font-bold text-slate-800">
+                    <span className="font-bold text-slate-800 inline-flex items-center gap-1.5">
                       {count} requests ({percentage}%)
+                      <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
                     </span>
                   </div>
                   <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -843,7 +858,7 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
                       style={{ width: `${percentage}%` }}
                     />
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -1528,6 +1543,99 @@ export const DashboardAnalytics: React.FC<DashboardAnalyticsProps> = ({
           </div>
         )}
       </div>
+
+      {selectedPipelineStatus && (() => {
+        const search = pipelineSearch.trim().toLowerCase();
+        const pipelineRequests = activeRequests
+          .filter(request => request.status === selectedPipelineStatus)
+          .filter(request => !search || [
+            request.requestCode,
+            request.partA?.eventName,
+            request.partA?.location,
+            request.partA?.organizer,
+            request.createdByName,
+            request.partA?.requestor
+          ].some(value => String(value || '').toLowerCase().includes(search)));
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label={`${selectedPipelineStatus} requests`}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col border border-slate-200">
+              <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-base">{selectedPipelineStatus} Requests</h3>
+                  <p className="text-xs text-slate-300 mt-0.5">{pipelineRequests.length} matching request{pipelineRequests.length === 1 ? '' : 's'}</p>
+                </div>
+                <button type="button" onClick={() => setSelectedPipelineStatus(null)} className="p-2 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white" aria-label="Close request list">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-4 border-b border-slate-200">
+                <label className="relative block">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="search"
+                    value={pipelineSearch}
+                    onChange={event => setPipelineSearch(event.target.value)}
+                    placeholder="Search request code, event, location, organizer, or requestor..."
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl border border-slate-300 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+              </div>
+              <div className="overflow-auto">
+                <table className="w-full min-w-[820px] text-left text-xs border-collapse">
+                  <thead className="sticky top-0 bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="p-3.5">Code &amp; Event</th>
+                      <th className="p-3.5">Location</th>
+                      <th className="p-3.5">Event Dates</th>
+                      <th className="p-3.5">Devices &amp; Total RRP</th>
+                      <th className="p-3.5">Workflow Status</th>
+                      <th className="p-3.5">Submitted By</th>
+                      <th className="p-3.5 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {pipelineRequests.map(request => (
+                      <tr key={request.id} className="hover:bg-slate-50/80">
+                        <td className="p-3.5">
+                          <div className="font-mono text-[11px] font-bold text-blue-700 mb-0.5">{request.requestCode}</div>
+                          <div className="font-bold text-slate-900 text-xs leading-snug">{request.partA?.eventName || '—'}</div>
+                        </td>
+                        <td className="p-3.5 text-slate-700">{request.partA?.location || '—'}</td>
+                        <td className="p-3.5 text-slate-700">
+                          <div>{formatDate(request.partA?.startDate || '')}</div>
+                          <div className="text-[10px] text-slate-400">to {formatDate(request.partA?.endDate || '')}</div>
+                        </td>
+                        <td className="p-3.5">
+                          <div className="font-bold text-slate-900 font-mono">{formatRM(request.totalValueRM || 0)}</div>
+                          <div className="text-[11px] text-slate-500">{request.partB?.length || 0} device lines</div>
+                        </td>
+                        <td className="p-3.5"><StatusBadge status={request.status as any} /></td>
+                        <td className="p-3.5 text-slate-700">{request.partA?.requestor || request.createdByName || '—'}</td>
+                        <td className="p-3.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedPipelineStatus(null);
+                              onSelectRequest?.(request);
+                            }}
+                            className="inline-flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
+                          >
+                            <Eye className="w-3.5 h-3.5" /> View
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {pipelineRequests.length === 0 && (
+                      <tr><td colSpan={7} className="p-8 text-center text-slate-500">No requests match this status and search.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

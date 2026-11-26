@@ -1110,15 +1110,6 @@ export const ImeiInventoryPage: React.FC<ImeiInventoryPageProps> = ({
       return;
     }
 
-    // Check duplicates against current inventory
-    const existingImeis = new Set(imeiList.map(it => (it.imei || '').trim().toLowerCase()));
-    const systemDupes = recordsToImport.filter(rec => rec.imei && existingImeis.has(rec.imei.trim().toLowerCase()));
-
-    if (systemDupes.length > 0) {
-      setBulkErrorMsg(`Duplicate Device IMEI No detected: ${systemDupes.slice(0, 3).map(d => `"${d.imei}"`).join(', ')}${systemDupes.length > 3 ? ` and ${systemDupes.length - 3} more` : ''} already exist in the IMEI Inventory.`);
-      return;
-    }
-
     // Reject the whole upload if SPP Order No values repeat within the file.
     const duplicateSppOrders = findDuplicateValues(
       recordsToImport.map(rec => rec.sppOrder),
@@ -2879,6 +2870,20 @@ export const ImeiInventoryPage: React.FC<ImeiInventoryPageProps> = ({
           requestStatus={selectedUploadReq.status}
           onSaveImeis={(updatedPartB, imeiRecords) => {
             if (imeiRecords && imeiRecords.length > 0) {
+              const seenImeis = new Set<string>();
+              const duplicateImeis = new Set<string>();
+              imeiRecords.forEach(record => {
+                const key = (record.imei || '').trim().toLowerCase();
+                if (!key) return;
+                if (seenImeis.has(key)) duplicateImeis.add(key);
+                seenImeis.add(key);
+              });
+
+              if (duplicateImeis.size > 0) {
+                alert(`Duplicate Device IMEI No detected in uploaded file: ${Array.from(duplicateImeis).slice(0, 3).map(value => `"${value}"`).join(', ')}${duplicateImeis.size > 3 ? ` and ${duplicateImeis.size - 3} more` : ''}. Each device must have a unique IMEI.`);
+                return;
+              }
+
               if (onBulkAddImeis) {
                 onBulkAddImeis(imeiRecords);
               } else {

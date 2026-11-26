@@ -221,7 +221,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
 
     const nextStatus = isSubmitAction
       ? (isResubmittingAfterHeadOfSalesDecision ? 'Under Review' : 'Pending Head of Sales')
-      : 'Draft';
+      : (editingRequest?.status || 'Draft');
 
     const requestToSave: RoadshowRequest = {
       ...(editingRequest || {} as RoadshowRequest),
@@ -248,7 +248,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
             ? isResubmittingAfterHeadOfSalesDecision
               ? 'Resubmitted Request to Device Team'
               : (editingRequest ? 'Resubmitted Request to Head of Sales' : 'Submitted Request to Head of Sales')
-            : (editingRequest ? 'Updated Request Draft' : 'Created Request Draft'),
+            : (editingRequest?.status && editingRequest.status !== 'Draft' ? 'Updated Request Details' : (editingRequest ? 'Updated Request Draft' : 'Created Request Draft')),
           previousStatus: editingRequest ? editingRequest.status : undefined,
           newStatus: nextStatus
         }
@@ -633,7 +633,7 @@ export const SalesRequestFormModal: React.FC<SalesRequestFormModalProps> = ({
               className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow-sm transition-all cursor-pointer"
             >
               <Save className="w-4 h-4 text-slate-300" />
-              <span>Save as Draft</span>
+              <span>{editingRequest && editingRequest.status !== 'Draft' ? 'Save Changes' : 'Save as Draft'}</span>
             </button>
 
             <button

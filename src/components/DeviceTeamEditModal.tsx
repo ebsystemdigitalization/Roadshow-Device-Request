@@ -234,6 +234,10 @@ export const DeviceTeamEditModal: React.FC<DeviceTeamEditModalProps> = ({
             </div>
           </div>
 
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
+            <strong>Material changes:</strong> Select the correct material code and colour for the requested device. RDR allows Device Team to choose any catalogue item and does not verify that it is the same model; please confirm the model before saving.
+          </div>
+
           {/* Section: Device Details Editing */}
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">

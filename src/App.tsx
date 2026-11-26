@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Bell, BellRing } from 'lucide-react';
-import { RoadshowRequest, User, UserRole, PartBDeviceItem, DeviceInventoryItem, ImeiInventoryItem } from './types';
+import { RoadshowRequest, User, UserRole, PartBDeviceItem, DeviceInventoryItem, ImeiInventoryItem, RdrInAppNotification } from './types';
 import { INITIAL_USERS } from './data/seedData';
 import { Navbar } from './components/Navbar';
 import { LoginPage } from './components/LoginPage';
@@ -17,7 +17,14 @@ import { ImeiDetailRecord } from './components/ImeiDetailModal';
 import { generateId, isRequestForHeadOfSales, isRequestForHeadOfUnit, isRequestForHeadOfDepartment } from './utils/formatters';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './lib/firebase';
-import { listenForForegroundPush, registerPushNotifications, removePushNotifications } from './services/pushNotifications';
+import {
+  getInAppNotifications,
+  listenForForegroundPush,
+  markAllInAppNotificationsRead,
+  markInAppNotificationRead,
+  registerPushNotifications,
+  removePushNotifications
+} from './services/pushNotifications';
 import {
   createRequest,
   deleteRequest,
@@ -61,6 +68,8 @@ export default function App() {
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [pushStatus, setPushStatus] = useState<'idle' | 'loading' | 'enabled' | 'denied' | 'unsupported' | 'error'>('idle');
   const [pushMessage, setPushMessage] = useState('');
+  const [inAppNotifications, setInAppNotifications] = useState<RdrInAppNotification[]>([]);
+  const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<User>(() => {
     const savedId = localStorage.getItem('rdr_current_user_id');
@@ -155,6 +164,34 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  // Load the signed-in user's in-app notifications and refresh while RDR is open.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setInAppNotifications([]);
+      setIsNotificationPanelOpen(false);
+      return;
+    }
+
+    let cancelled = false;
+    const refreshNotifications = async () => {
+      try {
+        const items = await getInAppNotifications();
+        if (!cancelled) setInAppNotifications(items);
+      } catch (error) {
+        console.error('Unable to load RDR in-app notifications:', error);
+      }
+    };
+
+    void refreshNotifications();
+    const intervalId = window.setInterval(() => void refreshNotifications(), 30000);
+    window.addEventListener('focus', refreshNotifications);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshNotifications);
+    };
+  }, [isAuthenticated]);
+
   // Sync an existing push permission after sign-in and show notifications while RDR is open.
   useEffect(() => {
     if (!isAuthenticated) {
@@ -204,9 +241,12 @@ export default function App() {
           icon: '/icons/rdr-192.png',
           badge: '/icons/rdr-180.png',
           data: { url: data.url || '/' },
-          tag: data.requestId || 'rdr-update'
+          tag: data.notificationId || data.requestId || 'rdr-update'
         })
       );
+      void getInAppNotifications()
+        .then(setInAppNotifications)
+        .catch(error => console.error('Unable to refresh RDR in-app notifications:', error));
     })
       .then(stop => {
         if (cancelled) stop();
@@ -333,6 +373,39 @@ export default function App() {
       console.error('Unable to enable RDR push notifications:', error);
       setPushStatus('error');
       setPushMessage(error instanceof Error ? error.message : 'Unable to enable notifications.');
+    }
+  };
+
+  const handleMarkAllNotificationsRead = async () => {
+    try {
+      await markAllInAppNotificationsRead();
+      const readAt = new Date().toISOString();
+      setInAppNotifications(previous => previous.map(item => ({ ...item, isRead: true, readAt })));
+    } catch (error) {
+      console.error('Unable to mark RDR notifications as read:', error);
+    }
+  };
+
+  const handleOpenInAppNotification = async (notification: RdrInAppNotification) => {
+    if (!notification.isRead) {
+      try {
+        await markInAppNotificationRead(notification.id);
+        const readAt = new Date().toISOString();
+        setInAppNotifications(previous => previous.map(item =>
+          item.id === notification.id ? { ...item, isRead: true, readAt } : item
+        ));
+      } catch (error) {
+        console.error('Unable to mark RDR notification as read:', error);
+      }
+    }
+
+    setIsNotificationPanelOpen(false);
+    if (notification.requestId) {
+      const relatedRequest = requests.find(item => item.id === notification.requestId);
+      if (relatedRequest) {
+        setActiveTab('requests');
+        setSelectedRequest(relatedRequest);
+      }
     }
   };
 
@@ -1163,8 +1236,71 @@ export default function App() {
         onOpenInventoryModal={() => setIsInventoryModalOpen(true)}
       />
 
-      {pushStatus !== 'unsupported' && (
-        <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-3 flex flex-wrap items-center justify-end gap-2">
+      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-3 flex flex-wrap items-center justify-end gap-2">
+          {currentUser.role === 'Sales Team' && (
+            <div className="relative mr-auto">
+              <button
+                type="button"
+                onClick={() => setIsNotificationPanelOpen(open => !open)}
+                aria-label={`In-app notifications${inAppNotifications.some(item => !item.isRead) ? `, ${inAppNotifications.filter(item => !item.isRead).length} unread` : ''}`}
+                aria-expanded={isNotificationPanelOpen}
+                className="relative inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <Bell className="w-4 h-4" />
+                Notifications
+                {inAppNotifications.some(item => !item.isRead) && (
+                  <span className="absolute -right-1.5 -top-1.5 min-w-5 h-5 px-1 rounded-full bg-rose-600 text-white text-[10px] leading-5 text-center">
+                    {inAppNotifications.filter(item => !item.isRead).length}
+                  </span>
+                )}
+              </button>
+
+              {isNotificationPanelOpen && (
+                <div className="absolute left-0 top-full z-50 mt-2 w-[min(92vw,24rem)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                    <div>
+                      <h2 className="text-sm font-bold text-slate-900">Notifications</h2>
+                      <p className="text-[11px] text-slate-500">Updates for your requests</p>
+                    </div>
+                    {inAppNotifications.some(item => !item.isRead) && (
+                      <button
+                        type="button"
+                        onClick={() => void handleMarkAllNotificationsRead()}
+                        className="text-[11px] font-semibold text-blue-700 hover:text-blue-900"
+                      >
+                        Mark all as read
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    {inAppNotifications.length > 0 ? inAppNotifications.map(notification => (
+                      <button
+                        key={notification.id}
+                        type="button"
+                        onClick={() => void handleOpenInAppNotification(notification)}
+                        className={`block w-full border-b border-slate-100 px-4 py-3 text-left hover:bg-slate-50 ${notification.isRead ? 'bg-white' : 'bg-blue-50/70'}`}
+                      >
+                        <span className="flex items-start gap-2">
+                          {!notification.isRead && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-blue-600" />}
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-bold text-slate-900">{notification.title}</span>
+                            <span className="mt-1 block text-xs leading-relaxed text-slate-600">{notification.body}</span>
+                            <span className="mt-1.5 block text-[10px] text-slate-400">
+                              {new Date(notification.createdAt).toLocaleString('en-MY')}
+                            </span>
+                          </span>
+                        </span>
+                      </button>
+                    )) : (
+                      <p className="px-4 py-8 text-center text-xs text-slate-500">You have no notifications.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {pushStatus !== 'unsupported' && (
+            <>
           {pushStatus === 'enabled' ? (
             <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 border border-emerald-200">
               <BellRing className="w-4 h-4" /> Notifications enabled
@@ -1185,8 +1321,9 @@ export default function App() {
           {pushMessage && pushStatus !== 'enabled' && (
             <span role="status" className="w-full text-right text-xs text-slate-600">{pushMessage}</span>
           )}
-        </div>
-      )}
+            </>
+          )}
+      </div>
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -1214,6 +1351,7 @@ export default function App() {
             users={users}
             deviceInventory={deviceInventory}
             imeiInventory={imeiInventory}
+            onSelectRequest={setSelectedRequest}
             requests={
               currentUser.role === 'Sales Team'
                 ? requests.filter(r => r.createdByUserId === currentUser.id)

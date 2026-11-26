@@ -27,6 +27,7 @@ const imeiInventoryCollection = db.collection('imei_inventory');
 const requestCountersCollection = db.collection('request_counters');
 const requestCodeRegistryCollection = db.collection('request_code_registry');
 const pushSubscriptionsCollection = db.collection('push_subscriptions');
+const notificationsCollection = db.collection('notifications');
 
 /**
  * Allocate a request code centrally so concurrent users cannot receive the same code.
@@ -350,6 +351,106 @@ async function sendRequestStatusNotification(
   }
 }
 
+async function sendPushNotificationToUsers(
+  recipientUids: string[],
+  title: string,
+  body: string,
+  requestId: string,
+  notificationId: string
+): Promise<void> {
+  const uniqueUids = [...new Set(recipientUids.filter(Boolean))];
+  if (uniqueUids.length === 0) return;
+
+  const subscriptionSnapshots = await Promise.all(
+    uniqueUids.map(uid => pushSubscriptionsCollection.where('uid', '==', uid).get())
+  );
+  const subscriptions = subscriptionSnapshots.flatMap(snapshot => snapshot.docs);
+  const uniqueSubscriptions = new Map<string, (typeof subscriptions)[number]>();
+  for (const document of subscriptions) {
+    const token = document.get('token');
+    if (typeof token === 'string' && token.trim()) uniqueSubscriptions.set(token, document);
+  }
+
+  const tokenEntries = [...uniqueSubscriptions.entries()];
+  if (tokenEntries.length === 0) return;
+
+  const appUrl = (process.env.RDR_PUBLIC_URL || 'https://roadshow-device-request-26.web.app')
+    .replace(/\/+$/, '');
+  const messageData = {
+    title,
+    body,
+    requestId,
+    notificationId,
+    url: `${appUrl}/`
+  };
+
+  for (let index = 0; index < tokenEntries.length; index += 500) {
+    const chunk = tokenEntries.slice(index, index + 500);
+    const result = await getMessaging().sendEachForMulticast({
+      tokens: chunk.map(([token]) => token),
+      data: messageData,
+      webpush: { headers: { Urgency: 'high' } }
+    });
+
+    const invalidTokenDeletes: Promise<unknown>[] = [];
+    result.responses.forEach((item, responseIndex) => {
+      if (item.success) return;
+      const code = item.error?.code || '';
+      if (
+        code === 'messaging/registration-token-not-registered' ||
+        code === 'messaging/invalid-registration-token'
+      ) {
+        const [token] = chunk[responseIndex];
+        invalidTokenDeletes.push(
+          pushSubscriptionsCollection.doc(pushTokenDocumentId(token)).delete()
+        );
+      }
+    });
+    if (invalidTokenDeletes.length > 0) await Promise.all(invalidTokenDeletes);
+  }
+}
+
+async function createImeiUploadNotification(
+  requestId: string,
+  requestData: Record<string, unknown>
+): Promise<void> {
+  const requestorUid = typeof requestData.createdByUserId === 'string'
+    ? requestData.createdByUserId.trim()
+    : '';
+  if (!requestorUid) return;
+
+  const requestCode = typeof requestData.requestCode === 'string' && requestData.requestCode.trim()
+    ? requestData.requestCode.trim()
+    : 'your roadshow request';
+  const title = 'IMEIs uploaded for your request';
+  const body = `The Device Team uploaded IMEIs for ${requestCode}. Open RDR to view the update.`;
+  const createdAt = new Date().toISOString();
+  const notificationRef = notificationsCollection.doc();
+
+  await notificationRef.set({
+    recipientUid: requestorUid,
+    type: 'imei-upload',
+    title,
+    body,
+    requestId,
+    requestCode,
+    createdAt,
+    isRead: false
+  });
+
+  try {
+    await sendPushNotificationToUsers(
+      [requestorUid],
+      title,
+      body,
+      requestId,
+      notificationRef.id
+    );
+  } catch (error) {
+    console.error('RDR IMEI upload push notification could not be sent:', error);
+  }
+}
+
 function canUpdateRequest(
   profile: UserProfile,
   uid: string,
@@ -357,6 +458,13 @@ function canUpdateRequest(
 ): boolean {
   if (profile.role === 'Admin') {
     return true;
+  }
+
+  if (profile.role === 'Sales Team' && requestData.createdByUserId === uid) {
+    const status = typeof requestData.status === 'string' ? requestData.status : '';
+    const hasHeadOfSalesApproved = Boolean(requestData.headOfSalesApproval) ||
+      ['Pending Sales Acceptance', 'Pending Head of Operation', 'Approved'].includes(status);
+    return !hasHeadOfSalesApproved;
   }
 
   if (requestData.createdByUserId === uid) {
@@ -381,6 +489,11 @@ function canDeleteRequest(
 ): boolean {
   if (profile.role === 'Admin') {
     return true;
+  }
+
+  if (profile.role === 'Sales Team' && requestData.createdByUserId === uid) {
+    const status = typeof requestData.status === 'string' ? requestData.status : '';
+    return !requestData.headOfSalesApproval && (status === 'Draft' || status === 'Rejected');
   }
 
   return requestData.createdByUserId === uid;
@@ -692,6 +805,113 @@ app.delete(
     } catch (error) {
       console.error('Unable to remove RDR push subscription:', error);
       response.status(500).json({ message: 'Unable to remove this device from RDR notifications.' });
+    }
+  }
+);
+
+app.get(
+  '/api/notifications',
+  requireAuth,
+  async (request: Request, response: Response) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({ message: 'An active RDR user profile is required.' });
+        return;
+      }
+
+      const snapshot = await notificationsCollection
+        .where('recipientUid', '==', uid)
+        .limit(100)
+        .get();
+      const notificationDocuments = [...snapshot.docs]
+        .sort((first, second) =>
+          String(second.get('createdAt') || '').localeCompare(
+            String(first.get('createdAt') || '')
+          )
+        )
+        .slice(0, 50);
+      const items = notificationDocuments.map(document => ({
+        id: document.id,
+        ...document.data()
+      }));
+
+      response.status(200).json({ items });
+    } catch (error) {
+      console.error('Unable to retrieve RDR notifications:', error);
+      response.status(500).json({ message: 'Unable to retrieve your notifications.' });
+    }
+  }
+);
+
+app.post(
+  '/api/notifications/read-all',
+  requireAuth,
+  async (request: Request, response: Response) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({ message: 'An active RDR user profile is required.' });
+        return;
+      }
+
+      const snapshot = await notificationsCollection
+        .where('recipientUid', '==', uid)
+        .limit(500)
+        .get();
+      const unreadDocuments = snapshot.docs.filter(document => document.get('isRead') !== true);
+      if (unreadDocuments.length > 0) {
+        const now = new Date().toISOString();
+        const batch = db.batch();
+        unreadDocuments.forEach(document => {
+          batch.update(document.ref, { isRead: true, readAt: now });
+        });
+        await batch.commit();
+      }
+
+      response.status(200).json({ updatedCount: unreadDocuments.length });
+    } catch (error) {
+      console.error('Unable to mark RDR notifications as read:', error);
+      response.status(500).json({ message: 'Unable to update your notifications.' });
+    }
+  }
+);
+
+app.post(
+  '/api/notifications/:notificationId/read',
+  requireAuth,
+  async (request: Request, response: Response) => {
+    try {
+      const uid = request.authenticatedUser!.uid;
+      const profile = await getUserProfile(uid);
+      if (!profile || !isUserActive(profile)) {
+        response.status(403).json({ message: 'An active RDR user profile is required.' });
+        return;
+      }
+
+      const notificationId = getRouteParameter(request.params.notificationId);
+      if (!notificationId) {
+        response.status(400).json({ message: 'A notification ID is required.' });
+        return;
+      }
+
+      const notificationRef = notificationsCollection.doc(notificationId);
+      const notification = await notificationRef.get();
+      if (!notification.exists || notification.get('recipientUid') !== uid) {
+        response.status(404).json({ message: 'The notification was not found.' });
+        return;
+      }
+
+      await notificationRef.update({
+        isRead: true,
+        readAt: new Date().toISOString()
+      });
+      response.status(200).json({ message: 'Notification marked as read.' });
+    } catch (error) {
+      console.error('Unable to mark RDR notification as read:', error);
+      response.status(500).json({ message: 'Unable to update this notification.' });
     }
   }
 );
@@ -1760,7 +1980,8 @@ app.post(
         return;
       }
 
-      // Append imports must also be unique against records already stored.
+      // Existing IMEIs may be recycled; only SPP order and mobile number
+      // duplicates are rejected against records already stored.
       if (appendMode) {
         const existingSnapshot = await imeiInventoryCollection
           .limit(500)
@@ -1770,11 +1991,6 @@ app.post(
         );
         const existingDuplicateMessages: string[] = [];
 
-        const existingImeiValues = findValuesAlreadyImported(
-          validItems.map(item => item.data.imei),
-          existingItems.map(item => item.imei),
-          normalizeInventoryTextKey
-        );
         const existingSppValues = findValuesAlreadyImported(
           validItems.map(item => item.data.sppOrder),
           existingItems.map(item => item.sppOrder),
@@ -1786,11 +2002,6 @@ app.post(
           normalizeInventoryMobileKey
         );
 
-        if (existingImeiValues.length > 0) {
-          existingDuplicateMessages.push(
-            `Device IMEI No already exists in IMEI Inventory: ${formatDuplicateValues(existingImeiValues)}.`
-          );
-        }
         if (existingSppValues.length > 0) {
           existingDuplicateMessages.push(
             `SPP Order No already exists in IMEI Inventory: ${formatDuplicateValues(existingSppValues)}.`
@@ -1837,6 +2048,27 @@ app.post(
       });
 
       await importBatch.commit();
+
+      if (profile.role === 'Device Team') {
+        const requestIds = [...new Set(
+          validItems
+            .map(item => typeof item.data.requestId === 'string' ? item.data.requestId.trim() : '')
+            .filter(Boolean)
+        )];
+
+        await Promise.all(requestIds.map(async requestId => {
+          const requestDocument = await requestsCollection.doc(requestId).get();
+          if (!requestDocument.exists) return;
+          try {
+            await createImeiUploadNotification(
+              requestId,
+              requestDocument.data() as Record<string, unknown>
+            );
+          } catch (error) {
+            console.error('RDR in-app IMEI upload notification could not be saved:', error);
+          }
+        }));
+      }
 
       response.status(201).json({
         message: 'IMEI inventory imported successfully.',
